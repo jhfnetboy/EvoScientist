@@ -192,6 +192,10 @@ class EvoScientistConfig:
     # DM access control policy
     dm_policy: str = "allowlist"
 
+    # STT (Speech-to-Text) Settings
+    stt_enabled: bool = False
+    stt_language: str = "auto"  # "auto" | "zh" | "en"
+
 
 # =============================================================================
 # Config file operations
