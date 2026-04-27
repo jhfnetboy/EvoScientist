@@ -18,6 +18,7 @@ from .memory import (
     create_memory_middleware,
 )
 from .tool_error_handler import ToolErrorHandlerMiddleware
+from .tool_result_sanitizer import ToolResultSanitizerMiddleware
 
 __all__ = [
     "AskUserMiddleware",
@@ -29,5 +30,6 @@ __all__ = [
     "ExtractedMemory",
     "Question",
     "ToolErrorHandlerMiddleware",
+    "ToolResultSanitizerMiddleware",
     "create_memory_middleware",
 ]

@@ -144,10 +144,12 @@ def _inject_subagent_middleware(subs: list[dict]) -> None:
     ToolNode handler which produces terse messages without tracebacks or
     retry guidance — reducing the subagent's ability to self-recover.
     """
-    from .middleware import ToolErrorHandlerMiddleware
+    from .middleware import ToolErrorHandlerMiddleware, ToolResultSanitizerMiddleware
 
     for sa in subs:
-        sa.setdefault("middleware", []).append(ToolErrorHandlerMiddleware())
+        mw_list = sa.setdefault("middleware", [])
+        mw_list.insert(0, ToolResultSanitizerMiddleware())
+        mw_list.append(ToolErrorHandlerMiddleware())
 
 
 def _build_prompt_refs() -> dict:
@@ -273,11 +275,16 @@ def _get_default_backend():
 
 def _get_default_middleware():
     """Build the default middleware list."""
-    from .middleware import create_memory_middleware, ToolErrorHandlerMiddleware
+    from .middleware import (
+        create_memory_middleware,
+        ToolErrorHandlerMiddleware,
+        ToolResultSanitizerMiddleware,
+    )
 
     cfg = _ensure_config()
     memory_dir = str(_paths_mod.MEMORY_DIR)
     mw = [
+        ToolResultSanitizerMiddleware(),
         ToolErrorHandlerMiddleware(),
         create_memory_middleware(memory_dir, extraction_model=_ensure_chat_model()),
     ]
@@ -342,7 +349,11 @@ def create_cli_agent(workspace_dir: str | None = None, checkpointer=None, config
     from deepagents import create_deep_agent
     from deepagents.backends import FilesystemBackend, CompositeBackend
     from .backends import CustomSandboxBackend, MergedReadOnlyBackend
-    from .middleware import create_memory_middleware, ToolErrorHandlerMiddleware
+    from .middleware import (
+        create_memory_middleware,
+        ToolErrorHandlerMiddleware,
+        ToolResultSanitizerMiddleware,
+    )
     from . import paths as _paths
 
     cfg = _ensure_config(config)
@@ -393,6 +404,7 @@ def create_cli_agent(workspace_dir: str | None = None, checkpointer=None, config
     )
 
     mw = [
+        ToolResultSanitizerMiddleware(),
         ToolErrorHandlerMiddleware(),
         create_memory_middleware(_mem_dir, extraction_model=_ensure_chat_model()),
     ]
