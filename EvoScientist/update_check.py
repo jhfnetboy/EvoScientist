@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -77,7 +78,14 @@ def is_update_available() -> tuple[bool, str | None]:
         ``(available, latest)`` tuple.  *available* is ``True`` when
         the PyPI version is strictly newer; *latest* is the version
         string (or ``None`` when the check fails).
+
+    Set ``EVOSCIENTIST_DISABLE_UPDATE_CHECK=1`` to short-circuit the check
+    entirely — useful when running a locally-patched install whose source
+    of truth is git, not PyPI.
     """
+    if os.environ.get("EVOSCIENTIST_DISABLE_UPDATE_CHECK"):
+        return False, None
+
     latest = get_latest_version()
     if latest is None:
         return False, None
