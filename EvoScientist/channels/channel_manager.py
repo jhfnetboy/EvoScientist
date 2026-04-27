@@ -572,7 +572,7 @@ class ChannelManager:
         self,
         bus: MessageBus,
         *,
-        health_port: int = 8080,
+        health_port: int = 0,
         drain_timeout: float = 30.0,
         shared_webhook_port: int = 0,
     ):
@@ -612,7 +612,12 @@ class ChannelManager:
         if bus is None:
             bus = MessageBus()
         shared_webhook_port = getattr(config, "shared_webhook_port", 0) or 0
-        manager = cls(bus, shared_webhook_port=shared_webhook_port)
+        health_port = getattr(config, "channel_health_port", 0) or 0
+        manager = cls(
+            bus,
+            health_port=health_port,
+            shared_webhook_port=shared_webhook_port,
+        )
         types = [
             t.strip() for t in (config.channel_enabled or "").split(",") if t.strip()
         ]

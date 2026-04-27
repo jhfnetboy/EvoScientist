@@ -182,6 +182,11 @@ class EvoScientistConfig:
     # Shared webhook port (0 = disabled)
     shared_webhook_port: int = 9000
 
+    # ChannelManager health-check HTTP port (0 = disabled).
+    # Previously hardcoded to 8080, which collided with ccproxy. Set to a
+    # non-zero port (e.g. 9090) only if k8s/monitoring needs the /healthz endpoint.
+    channel_health_port: int = 0
+
     # HITL (Human-in-the-Loop) Settings
     auto_approve: bool = False  # Auto-approve all tool executions without prompting
     shell_allow_list: str = ""  # Comma-separated shell command prefixes to auto-approve
