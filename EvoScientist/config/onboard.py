@@ -15,19 +15,19 @@ from pathlib import Path
 import questionary
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.styles import Style
-from prompt_toolkit.validation import Validator, ValidationError
+from prompt_toolkit.validation import ValidationError, Validator
 from questionary import Choice
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
+from ..llm import get_models_for_provider
 from .settings import (
     EvoScientistConfig,
+    get_config_path,
     load_config,
     save_config,
-    get_config_path,
 )
-from ..llm import get_models_for_provider
 
 console = Console()
 
@@ -110,6 +110,7 @@ STEPS = [
     "Thinking",
     "Skills",
     "MCP Servers",
+    "LaTeX",
     "Channels",
 ]
 
@@ -136,8 +137,8 @@ class IntegerValidator(Validator):
                 raise ValidationError(
                     message=f"Must be between {self.min_value} and {self.max_value}"
                 )
-        except ValueError:
-            raise ValidationError(message="Must be a valid integer")
+        except ValueError as e:
+            raise ValidationError(message="Must be a valid integer") from e
 
 
 class ChoiceValidator(Validator):
@@ -225,9 +226,9 @@ def validate_nvidia_key(api_key: str) -> tuple[bool, str]:
     try:
         from langchain_nvidia_ai_endpoints import ChatNVIDIA
 
-        llm = ChatNVIDIA(api_key=api_key, model="meta/llama-3.1-8b-instruct")
-        llm.available_models
+        ChatNVIDIA(api_key=api_key, model="meta/llama-3.1-8b-instruct")
         return True, "Valid"
+
     except Exception as e:
         error_str = str(e).lower()
         if (
@@ -277,6 +278,35 @@ def validate_google_key(api_key: str) -> tuple[bool, str]:
         return False, f"Error: {e}"
 
 
+def validate_minimax_key(api_key: str) -> tuple[bool, str]:
+    """Validate a MiniMax API key by making a test request.
+
+    Uses the Anthropic-compatible endpoint at api.minimaxi.com.
+
+    Returns:
+        Tuple of (is_valid, message).
+    """
+    if not api_key:
+        return True, "Skipped (no key provided)"
+
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic(
+            api_key=api_key,
+            base_url="https://api.minimaxi.com/anthropic",
+        )
+        client.models.list()
+        return True, "Valid"
+    except Exception as e:
+        error_str = str(e).lower()
+        if any(
+            k in error_str for k in ("401", "unauthorized", "invalid", "authentication")
+        ):
+            return False, "Invalid API key"
+        return False, f"Error: {e}"
+
+
 def validate_siliconflow_key(api_key: str) -> tuple[bool, str]:
     """Validate a SiliconFlow API key by making a test request.
 
@@ -307,7 +337,31 @@ def validate_siliconflow_key(api_key: str) -> tuple[bool, str]:
 
 
 def validate_openrouter_key(api_key: str) -> tuple[bool, str]:
-    """Validate an OpenRouter API key by making a test request.
+    """Validate an OpenRouter API key via the authenticated /auth/key endpoint.
+
+    Returns:
+        Tuple of (is_valid, message).
+    """
+    if not api_key:
+        return True, "Skipped (no key provided)"
+
+    try:
+        import httpx
+
+        resp = httpx.get(
+            "https://openrouter.ai/api/v1/auth/key",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return True, "Valid"
+        return False, "Invalid API key"
+    except Exception as e:
+        return False, f"Error: {e}"
+
+
+def validate_deepseek_key(api_key: str) -> tuple[bool, str]:
+    """Validate a DeepSeek API key by making a test request.
 
     Returns:
         Tuple of (is_valid, message).
@@ -318,7 +372,7 @@ def validate_openrouter_key(api_key: str) -> tuple[bool, str]:
     try:
         import openai
 
-        client = openai.OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+        client = openai.OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
         client.models.list()
         return True, "Valid"
     except Exception as e:
@@ -350,6 +404,66 @@ def validate_zhipu_key(api_key: str) -> tuple[bool, str]:
 
         client = openai.OpenAI(
             api_key=api_key, base_url="https://open.bigmodel.cn/api/paas/v4"
+        )
+        client.models.list()
+        return True, "Valid"
+    except Exception as e:
+        error_str = str(e).lower()
+        if (
+            "401" in error_str
+            or "unauthorized" in error_str
+            or "invalid" in error_str
+            or "authentication" in error_str
+        ):
+            return False, "Invalid API key"
+        return False, f"Error: {e}"
+
+
+def validate_volcengine_key(api_key: str) -> tuple[bool, str]:
+    """Validate a Volcengine API key by making a test request.
+
+    Returns:
+        Tuple of (is_valid, message).
+    """
+    if not api_key:
+        return True, "Skipped (no key provided)"
+
+    try:
+        import openai
+
+        client = openai.OpenAI(
+            api_key=api_key,
+            base_url="https://ark.cn-beijing.volces.com/api/v3",
+        )
+        client.models.list()
+        return True, "Valid"
+    except Exception as e:
+        error_str = str(e).lower()
+        if (
+            "401" in error_str
+            or "unauthorized" in error_str
+            or "invalid" in error_str
+            or "authentication" in error_str
+        ):
+            return False, "Invalid API key"
+        return False, f"Error: {e}"
+
+
+def validate_dashscope_key(api_key: str) -> tuple[bool, str]:
+    """Validate a DashScope API key by making a test request.
+
+    Returns:
+        Tuple of (is_valid, message).
+    """
+    if not api_key:
+        return True, "Skipped (no key provided)"
+
+    try:
+        import openai
+
+        client = openai.OpenAI(
+            api_key=api_key,
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         )
         client.models.list()
         return True, "Valid"
@@ -514,24 +628,42 @@ def _step_provider(config: EvoScientistConfig) -> str:
         Selected provider name.
     """
     choices = [
+        # Direct providers
         Choice(title="Anthropic (Claude models — API / OAuth)", value="anthropic"),
         Choice(title="OpenAI (GPT models — API / OAuth)", value="openai"),
         Choice(title="Google GenAI (Gemini models)", value="google-genai"),
-        Choice(title="NVIDIA (third party — limited free requests)", value="nvidia"),
         Choice(
-            title="SiliconFlow (third party — GLM, Kimi, MiniMax, etc.)",
-            value="siliconflow",
-        ),
-        Choice(
-            title="OpenRouter (third party — Grok, Gemini, Qwen, etc.)",
-            value="openrouter",
+            title="MiniMax (M2 — M2.7 models, 204K context, thinking)", value="minimax"
         ),
         Choice(title="ZhipuAI (智谱 — GLM models)", value="zhipu"),
         Choice(
             title="ZhipuAI CodePlan (智谱代码计划 — GLM models for coding)",
             value="zhipu-code",
         ),
+        Choice(
+            title="Volcengine (火山引擎 — Doubao models)",
+            value="volcengine",
+        ),
+        Choice(
+            title="DashScope (阿里云 — Qwen models)",
+            value="dashscope",
+        ),
+        Choice(
+            title="DeepSeek (DeepSeek-R1, DeepSeek-V3)",
+            value="deepseek",
+        ),
+        # Local
         Choice(title="Ollama (local models)", value="ollama"),
+        # Third-party / aggregator
+        Choice(title="NVIDIA (third party — limited free requests)", value="nvidia"),
+        Choice(
+            title="SiliconFlow (aggregator — GLM, Kimi, MiniMax, etc.)",
+            value="siliconflow",
+        ),
+        Choice(
+            title="OpenRouter (aggregator — Grok, Gemini, Qwen, etc.)",
+            value="openrouter",
+        ),
         Choice(
             title="OpenAI-compatible (third-party OpenAI endpoint)",
             value="custom-openai",
@@ -569,6 +701,11 @@ def _provider_key_info(config: EvoScientistConfig, provider: str):
             config.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
             validate_anthropic_key,
         ),
+        "minimax": (
+            "MiniMax",
+            config.minimax_api_key or os.environ.get("MINIMAX_API_KEY", ""),
+            validate_minimax_key,
+        ),
         "nvidia": (
             "NVIDIA",
             config.nvidia_api_key or os.environ.get("NVIDIA_API_KEY", ""),
@@ -589,6 +726,11 @@ def _provider_key_info(config: EvoScientistConfig, provider: str):
             config.openrouter_api_key or os.environ.get("OPENROUTER_API_KEY", ""),
             validate_openrouter_key,
         ),
+        "deepseek": (
+            "DeepSeek",
+            config.deepseek_api_key or os.environ.get("DEEPSEEK_API_KEY", ""),
+            validate_deepseek_key,
+        ),
         "zhipu": (
             "ZhipuAI",
             config.zhipu_api_key or os.environ.get("ZHIPU_API_KEY", ""),
@@ -598,6 +740,16 @@ def _provider_key_info(config: EvoScientistConfig, provider: str):
             "ZhipuAI CodePlan",
             config.zhipu_api_key or os.environ.get("ZHIPU_API_KEY", ""),
             validate_zhipu_key,
+        ),
+        "volcengine": (
+            "Volcengine",
+            config.volcengine_api_key or os.environ.get("VOLCENGINE_API_KEY", ""),
+            validate_volcengine_key,
+        ),
+        "dashscope": (
+            "DashScope",
+            config.dashscope_api_key or os.environ.get("DASHSCOPE_API_KEY", ""),
+            validate_dashscope_key,
         ),
         "custom-openai": (
             "OpenAI-compatible",
@@ -662,7 +814,7 @@ def _prompt_and_validate_api_key(
         valid, msg = validate_fn(key_to_validate)
         if valid:
             console.print(f"\r  [green]\u2713 {msg}[/green]      ")
-            return new_key if new_key else None
+            return new_key or None
         else:
             console.print(f"\r  [red]\u2717 {msg}[/red]      ")
             if not new_key:
@@ -678,7 +830,64 @@ def _prompt_and_validate_api_key(
                 raise KeyboardInterrupt()
             return new_key if save_anyway else None
 
-    return new_key if new_key else None
+    return new_key or None
+
+
+def _prompt_ccproxy_port(config: EvoScientistConfig) -> None:
+    """Prompt the user for a ccproxy port and save it to config."""
+
+    def valid_port(value: str) -> bool:
+        if not value:  # empty = keep default
+            return True
+        try:
+            return 0 < int(value) < 2**16
+        except (ValueError, TypeError):
+            return False
+
+    current_port = getattr(config, "ccproxy_port", 8000)
+    try:
+        raw = questionary.text(
+            f"Enter port number for ccproxy to run on (Current: {current_port}, Enter to keep):",
+            validate=valid_port,
+            style=WIZARD_STYLE,
+            qmark=QMARK,
+        ).ask()
+        ccproxy_port = int(raw) if raw else current_port
+    except (ValueError, TypeError):
+        ccproxy_port = current_port
+        console.print(f"  [dim]Using default port: {ccproxy_port}[/dim]")
+
+    config.ccproxy_port = ccproxy_port
+    console.print(
+        f"  [green]✓ ccproxy will run on http://127.0.0.1:{ccproxy_port}[/green]"
+    )
+
+
+def _run_ccproxy_login(provider: str, label: str) -> None:
+    """Run ccproxy auth login for the given provider and show status."""
+    from ..ccproxy_manager import _ccproxy_exe, check_ccproxy_auth
+
+    console.print("  [dim]Opening browser for authentication...[/dim]")
+    try:
+        proc = subprocess.run(
+            [_ccproxy_exe() or "ccproxy", "auth", "login", provider],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        for line in proc.stdout.splitlines():
+            if line.strip().startswith("https://"):
+                console.print(f"  [dim]Visit: {line.strip()}[/dim]")
+                break
+        authed, msg = check_ccproxy_auth(provider)
+        if authed:
+            console.print(f"  [green]✓ {label}: {msg}[/green]")
+        else:
+            console.print(f"  [red]Authentication failed: {msg}[/red]")
+    except subprocess.TimeoutExpired:
+        console.print("  [red]Login timed out.[/red]")
+    except Exception as exc:
+        console.print(f"  [red]Login error: {exc}[/red]")
 
 
 def _step_anthropic_auth_mode(config: EvoScientistConfig) -> str:
@@ -690,19 +899,20 @@ def _step_anthropic_auth_mode(config: EvoScientistConfig) -> str:
     Returns:
         Selected auth mode: "api_key", "oauth", or "auto".
     """
-    from ..ccproxy_manager import is_ccproxy_available, check_ccproxy_auth
+    from ..ccproxy_manager import check_ccproxy_auth, is_ccproxy_available
 
-    if not is_ccproxy_available():
-        console.print(
-            "  [dim]OAuth via ccproxy not available. "
-            'Install with: pip install "evoscientist[oauth]"[/dim]'
-        )
-        return "api_key"
+    ccproxy_available = is_ccproxy_available()
 
     choices = [
         Choice(title="API Key (direct Anthropic access)", value="api_key"),
         Choice(
-            title="Claude Code OAuth (via ccproxy — no API key needed)", value="oauth"
+            title="Claude Code OAuth (via ccproxy — no API key needed)"
+            + (
+                ""
+                if ccproxy_available
+                else " [requires: pip install evoscientist[oauth]]"
+            ),
+            value="oauth",
         ),
     ]
 
@@ -722,11 +932,46 @@ def _step_anthropic_auth_mode(config: EvoScientistConfig) -> str:
     if auth_mode is None:
         raise KeyboardInterrupt()
 
+    if auth_mode == "oauth" and not ccproxy_available:
+        console.print("  [yellow]✗ ccproxy not installed[/yellow]")
+        console.print()
+        install = questionary.confirm(
+            'Install ccproxy now? (pip install "evoscientist[oauth]")',
+            default=True,
+            style=WIZARD_STYLE,
+            qmark=f"  {QMARK}",
+        ).ask()
+        if install is None:
+            raise KeyboardInterrupt()
+        if install:
+            console.print()
+            if _install_ccproxy():
+                console.print("  [green]✓ ccproxy installed successfully.[/green]")
+            else:
+                console.print("  [yellow]Falling back to API key mode.[/yellow]")
+                return "api_key"
+        else:
+            console.print(
+                '  [dim]Skipped. Install manually: pip install "evoscientist[oauth]"[/dim]'
+            )
+            return "api_key"
+
+    if auth_mode == "oauth":
+        _prompt_ccproxy_port(config)
+
     # If OAuth selected, check auth status and offer login
     if auth_mode in ("oauth", "auto"):
         authed, msg = check_ccproxy_auth()
         if authed:
             console.print(f"  [green]✓ OAuth: {msg}[/green]")
+            relogin = questionary.confirm(
+                "Re-authenticate to refresh credentials?",
+                default=False,
+                style=CONFIRM_STYLE,
+                qmark=QMARK,
+            ).ask()
+            if relogin:
+                _run_ccproxy_login("claude_api", "OAuth")
         else:
             console.print(f"  [yellow]OAuth not authenticated: {msg}[/yellow]")
             login = questionary.confirm(
@@ -736,21 +981,7 @@ def _step_anthropic_auth_mode(config: EvoScientistConfig) -> str:
                 qmark=QMARK,
             ).ask()
             if login:
-                console.print("  [dim]Opening browser for authentication...[/dim]")
-                try:
-                    subprocess.run(
-                        ["ccproxy", "auth", "login", "claude_api"],
-                        timeout=120,
-                    )
-                    authed, msg = check_ccproxy_auth()
-                    if authed:
-                        console.print(f"  [green]✓ OAuth: {msg}[/green]")
-                    else:
-                        console.print(f"  [red]Authentication failed: {msg}[/red]")
-                except subprocess.TimeoutExpired:
-                    console.print("  [red]Login timed out.[/red]")
-                except Exception as exc:
-                    console.print(f"  [red]Login error: {exc}[/red]")
+                _run_ccproxy_login("claude_api", "OAuth")
 
     return auth_mode
 
@@ -764,19 +995,20 @@ def _step_openai_auth_mode(config: EvoScientistConfig) -> str:
     Returns:
         Selected auth mode: "api_key" or "oauth".
     """
-    from ..ccproxy_manager import is_ccproxy_available, check_ccproxy_auth
+    from ..ccproxy_manager import check_ccproxy_auth, is_ccproxy_available
 
-    if not is_ccproxy_available():
-        console.print(
-            "  [dim]OAuth via ccproxy not available. "
-            'Install with: pip install "evoscientist[oauth]"[/dim]'
-        )
-        return "api_key"
+    ccproxy_available = is_ccproxy_available()
 
     choices = [
         Choice(title="API Key (direct OpenAI access)", value="api_key"),
         Choice(
-            title="Codex OAuth (via ccproxy — no API key needed)", value="oauth"
+            title="Codex OAuth (via ccproxy — no API key needed)"
+            + (
+                ""
+                if ccproxy_available
+                else " [requires: pip install evoscientist[oauth]]"
+            ),
+            value="oauth",
         ),
     ]
 
@@ -796,11 +1028,44 @@ def _step_openai_auth_mode(config: EvoScientistConfig) -> str:
     if auth_mode is None:
         raise KeyboardInterrupt()
 
-    # If OAuth selected, check auth status and offer login
+    if auth_mode == "oauth" and not ccproxy_available:
+        console.print("  [yellow]✗ ccproxy not installed[/yellow]")
+        console.print()
+        install = questionary.confirm(
+            'Install ccproxy now? (pip install "evoscientist[oauth]")',
+            default=True,
+            style=WIZARD_STYLE,
+            qmark=f"  {QMARK}",
+        ).ask()
+        if install is None:
+            raise KeyboardInterrupt()
+        if install:
+            console.print()
+            if _install_ccproxy():
+                console.print("  [green]✓ ccproxy installed successfully.[/green]")
+            else:
+                console.print("  [yellow]Falling back to API key mode.[/yellow]")
+                return "api_key"
+        else:
+            console.print(
+                '  [dim]Skipped. Install manually: pip install "evoscientist[oauth]"[/dim]'
+            )
+            return "api_key"
+
+    # If OAuth selected, prompt for port and check auth status
     if auth_mode == "oauth":
+        _prompt_ccproxy_port(config)
         authed, msg = check_ccproxy_auth("codex")
         if authed:
             console.print(f"  [green]✓ Codex OAuth: {msg}[/green]")
+            relogin = questionary.confirm(
+                "Re-authenticate to refresh credentials?",
+                default=False,
+                style=CONFIRM_STYLE,
+                qmark=QMARK,
+            ).ask()
+            if relogin:
+                _run_ccproxy_login("codex", "Codex OAuth")
         else:
             console.print(f"  [yellow]Codex OAuth not authenticated: {msg}[/yellow]")
             login = questionary.confirm(
@@ -810,21 +1075,7 @@ def _step_openai_auth_mode(config: EvoScientistConfig) -> str:
                 qmark=QMARK,
             ).ask()
             if login:
-                console.print("  [dim]Opening browser for authentication...[/dim]")
-                try:
-                    subprocess.run(
-                        ["ccproxy", "auth", "login", "codex"],
-                        timeout=120,
-                    )
-                    authed, msg = check_ccproxy_auth("codex")
-                    if authed:
-                        console.print(f"  [green]✓ Codex OAuth: {msg}[/green]")
-                    else:
-                        console.print(f"  [red]Authentication failed: {msg}[/red]")
-                except subprocess.TimeoutExpired:
-                    console.print("  [red]Login timed out.[/red]")
-                except Exception as exc:
-                    console.print(f"  [red]Login error: {exc}[/red]")
+                _run_ccproxy_login("codex", "Codex OAuth")
 
     return auth_mode
 
@@ -869,7 +1120,7 @@ def _step_base_url(config: EvoScientistConfig, current_value: str | None = None)
     """
     current = current_value if current_value is not None else ""
     hint = f"Current: {current}" if current else ""
-    default = current if current else ""
+    default = current or ""
 
     url = questionary.text(
         f"Base URL{' (' + hint + ', Enter to keep)' if hint else ''}:",
@@ -895,7 +1146,7 @@ def _step_ollama_base_url(config: EvoScientistConfig) -> tuple[str, list[str]]:
         Tuple of (base_url, detected_model_names).
     """
     current = config.ollama_base_url or os.environ.get("OLLAMA_BASE_URL", "")
-    default = current if current else "http://localhost:11434"
+    default = current or "http://localhost:11434"
 
     url = questionary.text(
         f"Ollama base URL (Enter for {default}):",
@@ -1169,12 +1420,18 @@ _RECOMMENDED_SKILLS = [
 def _check_npx() -> bool:
     """Check if npx is available on the system.
 
+    Uses shutil.which() to resolve the executable path, which correctly
+    finds .cmd/.bat wrappers on Windows (e.g., npx.cmd).
+
     Returns:
         True if npx is found and working.
     """
+    npx = shutil.which("npx")
+    if not npx:
+        return False
     try:
         result = subprocess.run(
-            ["npx", "--version"],
+            [npx, "--version"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -1208,6 +1465,13 @@ def _detect_node_install_method() -> tuple[str, str]:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
+    # Windows: winget (built-in on Win 10+) or chocolatey
+    if sys.platform == "win32":
+        if shutil.which("winget"):
+            return "winget", "winget install OpenJS.NodeJS.LTS"
+        if shutil.which("choco"):
+            return "choco", "choco install nodejs-lts -y"
+
     return "manual", "https://nodejs.org"
 
 
@@ -1220,9 +1484,11 @@ def _install_node(method: str, command: str) -> bool:
     if method == "manual":
         return False
 
+    parts = command.split()
+    exe = shutil.which(parts[0]) or parts[0]
     try:
         proc = subprocess.run(
-            command.split(),
+            [exe, *parts[1:]],
             capture_output=True,
             text=True,
             timeout=120,
@@ -1279,6 +1545,251 @@ def _ensure_npx(reason: str) -> bool:
         console.print(f"  [dim]Install Node.js: {command}[/dim]")
 
     return False
+
+
+# =============================================================================
+# TinyTeX (LaTeX) helpers
+# =============================================================================
+
+
+def _check_latex_components() -> dict[str, bool]:
+    """Check which LaTeX components are available.
+
+    Returns:
+        Dict mapping component name to availability:
+        ``{"pdflatex": bool, "latexmk": bool, "tlmgr": bool}``.
+    """
+    result: dict[str, bool] = {}
+    for cmd in ("pdflatex", "latexmk", "tlmgr"):
+        exe = shutil.which(cmd)
+        if not exe:
+            result[cmd] = False
+            continue
+        try:
+            proc = subprocess.run(
+                [exe, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            result[cmd] = proc.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            result[cmd] = False
+    return result
+
+
+def _check_tinytex() -> bool:
+    """Check if a usable LaTeX distribution is available.
+
+    Returns:
+        True if pdflatex is found and working.
+    """
+    return _check_latex_components().get("pdflatex", False)
+
+
+def _detect_tinytex_install_method() -> tuple[str, str]:
+    """Detect the best way to install TinyTeX for this platform.
+
+    Returns:
+        Tuple of (method_name, install_command_or_url).
+    """
+    if sys.platform == "win32":
+        if shutil.which("choco"):
+            return "choco", "choco install tinytex -y"
+        if shutil.which("scoop"):
+            return "scoop", "scoop install tinytex"
+        return "manual", "https://yihui.org/tinytex/"
+
+    # macOS and Linux: use the official install script
+    if shutil.which("curl"):
+        return (
+            "curl",
+            'curl -sL "https://yihui.org/tinytex/install-bin-unix.sh" | sh',
+        )
+    if shutil.which("wget"):
+        return (
+            "wget",
+            'wget -qO- "https://yihui.org/tinytex/install-bin-unix.sh" | sh',
+        )
+
+    return "manual", "https://yihui.org/tinytex/"
+
+
+def _install_tinytex(method: str, command: str) -> bool:
+    """Install TinyTeX using the detected method.
+
+    Returns:
+        True if installation succeeded.
+    """
+    if method == "manual":
+        return False
+
+    if method in ("curl", "wget"):
+        # Pipe-to-shell commands must run through the shell
+        try:
+            proc = subprocess.run(
+                command,
+                shell=True,  # user confirmed install in wizard
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            return proc.returncode == 0
+        except subprocess.TimeoutExpired:
+            console.print("  [red]✗ Installation timed out[/red]")
+            return False
+        except Exception as e:
+            console.print(f"  [red]✗ Installation failed: {e}[/red]")
+            return False
+
+    # choco / scoop
+    parts = command.split()
+    exe = shutil.which(parts[0]) or parts[0]
+    try:
+        proc = subprocess.run(
+            [exe, *parts[1:]],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        return proc.returncode == 0
+    except FileNotFoundError:
+        console.print(f"  [red]✗ {method} not found[/red]")
+        return False
+    except subprocess.TimeoutExpired:
+        console.print("  [red]✗ Installation timed out[/red]")
+        return False
+    except Exception as e:
+        console.print(f"  [red]✗ Installation failed: {e}[/red]")
+        return False
+
+
+def _print_latex_status(components: dict[str, bool]) -> None:
+    """Print a single-line status showing all LaTeX components."""
+    parts: list[str] = []
+    for cmd, _role in (
+        ("pdflatex", "compiler"),
+        ("latexmk", "build tool"),
+        ("tlmgr", "package manager"),
+    ):
+        if components.get(cmd, False):
+            parts.append(f"[green]✓ {cmd}[/green]")
+        else:
+            parts.append(f"[yellow]✗ {cmd}[/yellow]")
+    console.print("  " + "  ".join(parts))
+
+
+def _auto_install_latexmk() -> None:
+    """Auto-install latexmk via tlmgr when it is missing."""
+    console.print("  [dim]Installing latexmk via tlmgr...[/dim]")
+    tlmgr = shutil.which("tlmgr")
+    if not tlmgr:
+        return
+    try:
+        proc = subprocess.run(
+            [tlmgr, "install", "latexmk"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if proc.returncode == 0 and shutil.which("latexmk"):
+            console.print("  [green]✓ latexmk installed[/green]")
+        else:
+            console.print(
+                "  [yellow]⚠ Failed to install latexmk"
+                " (run: tlmgr install latexmk)[/yellow]"
+            )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        console.print(
+            "  [yellow]⚠ Failed to install latexmk"
+            " (run: tlmgr install latexmk)[/yellow]"
+        )
+
+
+def _step_tinytex() -> None:
+    """Step 9: Prepare LaTeX environment (TinyTeX).
+
+    Asks the user whether they want to set up LaTeX for paper compilation.
+    If yes, checks for an existing installation and offers to install TinyTeX
+    when none is found.  The agent can auto-install missing LaTeX packages at
+    runtime via ``tlmgr``, so only the base TinyTeX is needed here.
+    """
+    latex_choices = [
+        Choice(title="No need (skip LaTeX setup)", value=False),
+        Choice(title="Install now (TinyTeX compiler)", value=True),
+    ]
+    prepare = questionary.select(
+        "LaTeX environment (needed to compile .tex → .pdf):",
+        choices=latex_choices,
+        default=False,
+        style=WIZARD_STYLE,
+        qmark=QMARK,
+    ).ask()
+
+    if prepare is None:
+        raise KeyboardInterrupt()
+
+    if not prepare:
+        _print_step_skipped("LaTeX", "skipped")
+        console.print(
+            "  [dim]Install later:"
+            ' curl -sL "https://yihui.org/tinytex/install-bin-unix.sh" | sh[/dim]'
+        )
+        return
+
+    # User wants LaTeX — check existing installation
+    console.print("  [dim]Checking LaTeX environment...[/dim]")
+
+    components = _check_latex_components()
+
+    if components["pdflatex"]:
+        # Already installed — show detailed status
+        _print_latex_status(components)
+        # Auto-fix missing latexmk if tlmgr is available
+        if not components["latexmk"] and components["tlmgr"]:
+            _auto_install_latexmk()
+        return
+
+    # Not installed — detect install method and offer
+    console.print("  [yellow]✗ pdflatex not found[/yellow]")
+    method, command = _detect_tinytex_install_method()
+
+    if method == "manual":
+        _print_step_skipped("LaTeX", "manual install needed")
+        console.print(f"  [dim]Install TinyTeX: {command}[/dim]")
+        return
+
+    install = questionary.confirm(
+        f"Install TinyTeX via {method}?",
+        default=True,
+        style=WIZARD_STYLE,
+        qmark=f"  {QMARK}",
+    ).ask()
+
+    if install is None:
+        raise KeyboardInterrupt()
+
+    if not install:
+        _print_step_skipped("LaTeX", "skipped")
+        console.print(f"  [dim]Install later: {command}[/dim]")
+        return
+
+    console.print("  [dim]Installing TinyTeX (this may take a minute)...[/dim]")
+    if _install_tinytex(method, command):
+        post = _check_latex_components()
+        if post["pdflatex"]:
+            _print_latex_status(post)
+            _print_step_result("LaTeX", "TinyTeX installed")
+        else:
+            console.print("  [green]✓ TinyTeX installed[/green]")
+            console.print(
+                "  [yellow]⚠ Restart your terminal"
+                " for pdflatex to appear in PATH[/yellow]"
+            )
+            _print_step_result("LaTeX", "installed (restart terminal for PATH)")
+    else:
+        console.print(f"  [dim]Install manually: {command}[/dim]")
+        _print_step_result("LaTeX", "installation failed", success=False)
 
 
 def _step_skills() -> list[str]:
@@ -1371,136 +1882,48 @@ def _step_skills() -> list[str]:
     return installed
 
 
-_RECOMMENDED_MCP_SERVERS = [
-    # ── Built-in ──
-    {
-        "label": "Sequential Thinking  (structured reasoning for non-reasoning models)",
-        "name": "sequential-thinking",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
-    },
-    {
-        "label": "Docs by LangChain  (documentation for building agents)",
-        "name": "docs-langchain",
-        "url": "https://docs.langchain.com/mcp",
-    },
-    # ── Search & Knowledge ──
-    {
-        "label": "Perplexity  (AI-powered web search — requires PERPLEXITY_API_KEY)",
-        "name": "perplexity",
-        "command": "npx",
-        "args": ["-y", "@perplexity-ai/mcp-server"],
-        "env": {"PERPLEXITY_API_KEY": "${PERPLEXITY_API_KEY}"},
-        "env_key": "PERPLEXITY_API_KEY",
-        "env_hint": "export PERPLEXITY_API_KEY=pplx-... (get one at perplexity.ai/settings/api)",
-    },
-    {
-        "label": "Context7  (fast documentation lookup — API key unlocks higher rate limits)",
-        "name": "context7",
-        "command": "npx",
-        "args": ["-y", "@upstash/context7-mcp"],
-        "env": {"CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"},
-        "env_key": "CONTEXT7_API_KEY",
-        "env_hint": "export CONTEXT7_API_KEY=... (optional — unlocks higher rate limits)",
-        "env_optional": True,
-    },
-    # ── Research ──
-    {
-        "label": "DeepWiki  (search & read GitHub repo documentation)",
-        "name": "deepwiki",
-        "url": "https://mcp.deepwiki.com/mcp",
-    },
-    {
-        "label": "ArXiv  (search & fetch academic papers from arXiv)",
-        "name": "arxiv",
-        "pip_package": "arxiv-mcp-server",
-        "command": "arxiv-mcp-server",
-        "args": [],
-    },
-]
-
-
-def _pip_install_hint() -> str:
-    """Human-readable install command for error messages."""
-    if shutil.which("uv"):
-        return "uv pip install"
-    return "pip install"
-
-
-def _install_pip_package(package: str) -> bool:
-    """Silently install a pip package.
-
-    Tries ``uv pip install`` first (works reliably in uv-managed
-    environments where ``pip`` may not be available), then falls back
-    to ``python -m pip install``.
-
-    Returns:
-        True if installation succeeded.
-    """
-    # Build candidate command lists: uv first (if available), then pip.
-    commands: list[list[str]] = []
-    if shutil.which("uv"):
-        commands.append(["uv", "pip", "install", "-q", package])
-    commands.append([sys.executable, "-m", "pip", "install", "-q", package])
-
-    for cmd in commands:
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            if result.returncode == 0:
-                # Invalidate import caches so newly-installed packages are
-                # discoverable in the current process without a restart.
-                import importlib
-
-                importlib.invalidate_caches()
-                return True
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-    return False
-
-
 def _step_mcp_servers() -> list[str]:
     """Step 8: Optionally install recommended MCP servers.
 
     Shows a checkbox list of recommended servers. Already-configured servers
     are shown as disabled so users don't accidentally override them.
-    Selected ones are added to the user MCP config via ``add_mcp_server()``.
+    Selected ones are added to the user MCP config via ``install_mcp_server()``.
 
     Handles env-key prompts, pip package installs, and URL-based servers.
 
     Returns:
         List of server names that were installed.
     """
-    from ..mcp.client import _load_user_config, add_mcp_server
+    from ..mcp.client import _load_user_config
+    from ..mcp.registry import fetch_marketplace_index, install_mcp_server
 
+    try:
+        all_servers = fetch_marketplace_index()
+    except Exception:
+        all_servers = []
+    servers = [s for s in all_servers if "onboarding" in s.tags]
     existing_config = _load_user_config()
 
     choices = []
-    for srv in _RECOMMENDED_MCP_SERVERS:
-        if srv["name"] in existing_config:
+    for srv in servers:
+        if srv.name in existing_config:
             choices.append(
                 Choice(
                     title=[
-                        ("", srv["label"]),
+                        ("", srv.label),
                         ("class:instruction", "  (already configured)"),
                     ],
-                    value=srv["name"],
+                    value=srv.name,
                     disabled=True,
                 )
             )
         else:
-            choices.append(Choice(title=srv["label"], value=srv["name"]))
+            choices.append(Choice(title=srv.label, value=srv.name))
 
-    all_installed = all(
-        srv["name"] in existing_config for srv in _RECOMMENDED_MCP_SERVERS
-    )
+    all_installed = all(srv.name in existing_config for srv in servers)
     if all_installed:
         console.print(
-            "  [green]✓ All recommended MCP servers are already configured.[/green]"
+            "  [green]\u2713 All recommended MCP servers are already configured.[/green]"
         )
         return []
 
@@ -1517,17 +1940,13 @@ def _step_mcp_servers() -> list[str]:
         return []
 
     # Check if any selected servers require npx
-    needs_npx = any(
-        srv.get("command") == "npx"
-        for srv in _RECOMMENDED_MCP_SERVERS
-        if srv["name"] in selected
-    )
+    needs_npx = any(srv.command == "npx" for srv in servers if srv.name in selected)
     if needs_npx:
         if not _ensure_npx("some MCP servers require Node.js"):
             npx_servers = {
-                srv["name"]
-                for srv in _RECOMMENDED_MCP_SERVERS
-                if srv["name"] in selected and srv.get("command") == "npx"
+                srv.name
+                for srv in servers
+                if srv.name in selected and srv.command == "npx"
             }
             selected = [s for s in selected if s not in npx_servers]
             if npx_servers:
@@ -1539,48 +1958,15 @@ def _step_mcp_servers() -> list[str]:
 
     installed = []
     for name in selected:
-        srv = next(s for s in _RECOMMENDED_MCP_SERVERS if s["name"] == name)
+        srv = next(s for s in servers if s.name == name)
         try:
-            # Prompt for required API keys
-            env_key = srv.get("env_key")
-            if env_key:
-                is_optional = srv.get("env_optional", False)
-                hint = srv.get("env_hint", "")
-                if is_optional:
-                    console.print(f"  [dim]{hint}[/dim]")
-                else:
-                    console.print(f"  [yellow]⚠ Requires {env_key}[/yellow]")
-                    console.print(f"  [dim]{hint}[/dim]")
-                    if not os.environ.get(env_key):
-                        console.print(
-                            f"  [dim]Set it before running EvoScientist: export {env_key}=...[/dim]"
-                        )
-
-            # Install pip package if needed
-            pip_pkg = srv.get("pip_package")
-            if pip_pkg:
-                console.print(f"  [dim]Installing {pip_pkg}...[/dim]")
-                if not _install_pip_package(pip_pkg):
-                    _print_step_result(
-                        "MCP",
-                        f"{name} — {_pip_install_hint()} {pip_pkg} failed",
-                        success=False,
-                    )
-                    continue
-
-            # Add to MCP config
-            if "url" in srv:
-                add_mcp_server(name, "streamable_http", url=srv["url"])
+            if install_mcp_server(srv):
+                _print_step_result("MCP", f"{name}")
+                installed.append(name)
             else:
-                add_mcp_server(
-                    name,
-                    "stdio",
-                    command=srv["command"],
-                    args=srv.get("args", []),
-                    env=srv.get("env"),
+                _print_step_result(
+                    "MCP", f"{name} — installation failed", success=False
                 )
-            _print_step_result("MCP", f"{name}")
-            installed.append(name)
         except Exception as e:
             _print_step_result("MCP", f"{name} — {e}", success=False)
 
@@ -1635,6 +2021,24 @@ def validate_imessage() -> tuple[bool, str]:
 
     version_str = f" ({version})" if version else ""
     return True, f"imsg{version_str} at {cli_path}"
+
+
+def _install_ccproxy() -> bool:
+    """Run pip install for ccproxy (evoscientist[oauth]).
+
+    Uses uv pip install when available (uv-managed envs don't ship pip).
+
+    Returns:
+        True if installation succeeded and ccproxy is available.
+    """
+    from ..ccproxy_manager import is_ccproxy_available
+    from ..mcp.registry import install_pip_package
+
+    ok = install_pip_package("evoscientist[oauth]")
+    if not ok:
+        console.print("  [red]✗ Installation failed.[/red]")
+        return False
+    return is_ccproxy_available()
 
 
 def _install_imsg() -> bool:
@@ -1874,6 +2278,8 @@ def _step_channels(config: EvoScientistConfig) -> dict[str, object]:
         updates["imessage_enabled"] = False
         return updates
 
+    from ..mcp.registry import install_pip_package, pip_install_hint
+
     # Build a lookup for channel definitions
     _ch_lookup = {
         v: (v, d, fields, imp, extra) for v, d, fields, imp, extra in _CHANNELS
@@ -1907,13 +2313,13 @@ def _step_channels(config: EvoScientistConfig) -> dict[str, object]:
                     qmark=f"  {QMARK}",
                 ).ask()
                 if install_now is None:
-                    raise KeyboardInterrupt()
+                    raise KeyboardInterrupt() from None
                 if install_now:
                     console.print(f"  [dim]Installing {_pkg_display}...[/dim]")
                     if _pip_pkgs:
-                        _ok = all(_install_pip_package(p) for p in _pip_pkgs)
+                        _ok = all(install_pip_package(p) for p in _pip_pkgs)
                     else:
-                        _ok = _install_pip_package(f"evoscientist[{pip_extra}]")
+                        _ok = install_pip_package(f"evoscientist[{pip_extra}]")
                     if _ok:
                         # Verify the import actually works now
                         try:
@@ -1930,7 +2336,7 @@ def _step_channels(config: EvoScientistConfig) -> dict[str, object]:
                     else:
                         console.print("  [red]✗ Installation failed.[/red]")
                         console.print(
-                            f"  [dim]Run manually:[/dim] {_pip_install_hint()} {_pkg_display}"
+                            f"  [dim]Run manually:[/dim] {pip_install_hint()} {_pkg_display}"
                         )
             if not _pkg_ready:
                 continue
@@ -1977,25 +2383,76 @@ def _step_channels(config: EvoScientistConfig) -> dict[str, object]:
                 raise KeyboardInterrupt()
             updates[field_name] = value.strip()
 
-        # Feishu optional fields (verification_token & encrypt_key)
+        # Feishu: subscription mode + optional fields
         if ch_name == "feishu":
-            console.print(
-                "  [dim]The following fields are optional (press Enter to skip):[/dim]"
-            )
-            for field_name, prompt_label in [
-                ("feishu_verification_token", "Verification Token (optional)"),
-                ("feishu_encrypt_key", "Encrypt Key (optional)"),
-            ]:
-                current = getattr(config, field_name, "")
-                value = questionary.text(
-                    f"{prompt_label}:",
-                    default=current,
-                    style=WIZARD_STYLE,
-                    qmark=f"  {QMARK}",
-                ).ask()
-                if value is None:
-                    raise KeyboardInterrupt()
-                updates[field_name] = value.strip()
+            mode_choices = [
+                Choice(
+                    title="Webhook (requires public IP / port forwarding)",
+                    value="webhook",
+                ),
+                Choice(
+                    title="WebSocket long connection (no public IP needed)",
+                    value="websocket",
+                ),
+            ]
+            sub_mode = questionary.select(
+                "Subscription mode:",
+                choices=mode_choices,
+                default="webhook",
+                style=WIZARD_STYLE,
+                qmark=f"  {QMARK}",
+                use_indicator=True,
+            ).ask()
+            if sub_mode is None:
+                raise KeyboardInterrupt()
+            updates["feishu_subscription_mode"] = sub_mode
+
+            if sub_mode == "websocket":
+                # WebSocket mode needs lark-oapi SDK
+                try:
+                    __import__("lark_oapi")
+                except ImportError:
+                    console.print(
+                        '  [yellow]✗ WebSocket mode requires "lark-oapi".[/yellow]'
+                    )
+                    install_sdk = questionary.confirm(
+                        'Install "lark-oapi>=1.4.0" now?',
+                        default=True,
+                        style=WIZARD_STYLE,
+                        qmark=f"  {QMARK}",
+                    ).ask()
+                    if install_sdk is None:
+                        raise KeyboardInterrupt() from None
+                    if install_sdk:
+                        console.print('  [dim]Installing "lark-oapi"...[/dim]')
+                        if install_pip_package("lark-oapi>=1.4.0"):
+                            console.print("  [green]✓ Installed successfully.[/green]")
+                        else:
+                            console.print("  [red]✗ Installation failed.[/red]")
+                            console.print(
+                                f"  [dim]Run manually:[/dim] {pip_install_hint()} "
+                                '"lark-oapi>=1.4.0"'
+                            )
+            else:
+                # Webhook mode: prompt optional verification/encryption fields
+                console.print(
+                    "  [dim]The following fields are optional"
+                    " (press Enter to skip):[/dim]"
+                )
+                for field_name, prompt_label in [
+                    ("feishu_verification_token", "Verification Token (optional)"),
+                    ("feishu_encrypt_key", "Encrypt Key (optional)"),
+                ]:
+                    current = getattr(config, field_name, "")
+                    value = questionary.text(
+                        f"{prompt_label}:",
+                        default=current,
+                        style=WIZARD_STYLE,
+                        qmark=f"  {QMARK}",
+                    ).ask()
+                    if value is None:
+                        raise KeyboardInterrupt()
+                    updates[field_name] = value.strip()
 
         # Allowed senders (common for all channels)
         senders_field = f"{ch_name}_allowed_senders"
@@ -2275,24 +2732,33 @@ def run_onboard(skip_validation: bool = False) -> bool:
         elif provider == "openai":
             auth_mode = _step_openai_auth_mode(config)
             config.openai_auth_mode = auth_mode
+        else:
+            # Non-Anthropic/OpenAI provider: reset OAuth modes to avoid
+            # stale oauth config triggering ccproxy requirement on startup
+            config.anthropic_auth_mode = "api_key"
+            config.openai_auth_mode = "api_key"
 
         # Step 2c: Provider API Key (skip for Ollama — no key needed,
         # and for Anthropic/OpenAI pure OAuth — key provided by ccproxy)
         _PROVIDER_KEY_ATTR = {
             "anthropic": "anthropic_api_key",
+            "minimax": "minimax_api_key",
             "nvidia": "nvidia_api_key",
             "google-genai": "google_api_key",
             "siliconflow": "siliconflow_api_key",
             "openrouter": "openrouter_api_key",
+            "deepseek": "deepseek_api_key",
             "zhipu": "zhipu_api_key",
             "zhipu-code": "zhipu_api_key",
+            "volcengine": "volcengine_api_key",
+            "dashscope": "dashscope_api_key",
             "custom-openai": "custom_openai_api_key",
             "custom-anthropic": "custom_anthropic_api_key",
         }
-        _skip_api_key = provider == "ollama" or (
-            provider == "anthropic" and config.anthropic_auth_mode == "oauth"
-        ) or (
-            provider == "openai" and config.openai_auth_mode == "oauth"
+        _skip_api_key = (
+            provider == "ollama"
+            or (provider == "anthropic" and config.anthropic_auth_mode == "oauth")
+            or (provider == "openai" and config.openai_auth_mode == "oauth")
         )
         if not _skip_api_key:
             new_key = _step_provider_api_key(config, provider, skip_validation)
@@ -2330,7 +2796,10 @@ def run_onboard(skip_validation: bool = False) -> bool:
         # Step 8: MCP Servers
         _step_mcp_servers()
 
-        # Step 9: Channels
+        # Step 9: LaTeX (TinyTeX)
+        _step_tinytex()
+
+        # Step 10: Channels
         channel_updates = _step_channels(config)
         for key, value in channel_updates.items():
             setattr(config, key, value)

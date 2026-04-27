@@ -8,9 +8,13 @@ import asyncio
 import base64
 import mimetypes
 import os
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
-from langchain_core.messages import AIMessage, AIMessageChunk  # type: ignore[import-untyped]
+from langchain_core.messages import (  # type: ignore[import-untyped]
+    AIMessage,
+    AIMessageChunk,
+)
 
 from .emitter import StreamEventEmitter
 from .tracker import ToolCallTracker
@@ -210,7 +214,7 @@ async def stream_agent_events(
         """Stable key for tracker/mapping per sub-agent namespace."""
         if not namespace:
             return None
-        task_id, task_ns = _extract_task_id(namespace)
+        _task_id, task_ns = _extract_task_id(namespace)
         if task_ns:
             return task_ns
         meta_task_id = _find_task_id_from_metadata(metadata)
@@ -498,7 +502,14 @@ async def stream_agent_events(
                                 ev.data["args"],
                                 ev.data.get("id", ""),
                             ).data
-                        # Skip text/thinking from sub-agents (too noisy)
+                        # Emit sub-agent text for fallback extraction
+                        # (not displayed in TUI, but available to consumers)
+                        elif ev.type == "text":
+                            yield emitter.subagent_text(
+                                subagent,
+                                ev.data.get("content", ""),
+                                instance_id=tracker_key,
+                            ).data
 
                     if hasattr(msg, "tool_calls") and msg.tool_calls:
                         for tc in msg.tool_calls:

@@ -5,7 +5,7 @@ All events contain a type and associated data dict.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any
 
 
 @dataclass
@@ -13,7 +13,7 @@ class StreamEvent:
     """Unified stream event."""
 
     type: str
-    data: Dict[str, Any]
+    data: dict[str, Any]
 
 
 class StreamEventEmitter:
@@ -32,7 +32,7 @@ class StreamEventEmitter:
         return StreamEvent("text", {"type": "text", "content": content})
 
     @staticmethod
-    def tool_call(name: str, args: Dict[str, Any], tool_id: str = "") -> StreamEvent:
+    def tool_call(name: str, args: dict[str, Any], tool_id: str = "") -> StreamEvent:
         """Tool call event."""
         return StreamEvent(
             "tool_call",
@@ -66,7 +66,7 @@ class StreamEventEmitter:
 
     @staticmethod
     def subagent_tool_call(
-        subagent: str, name: str, args: Dict[str, Any], tool_id: str = ""
+        subagent: str, name: str, args: dict[str, Any], tool_id: str = ""
     ) -> StreamEvent:
         """Tool call from inside a sub-agent."""
         return StreamEvent(
@@ -93,6 +93,21 @@ class StreamEventEmitter:
                 "name": name,
                 "content": content,
                 "success": success,
+            },
+        )
+
+    @staticmethod
+    def subagent_text(
+        subagent: str, content: str, instance_id: str = ""
+    ) -> StreamEvent:
+        """Text content from a sub-agent (for fallback extraction)."""
+        return StreamEvent(
+            "subagent_text",
+            {
+                "type": "subagent_text",
+                "subagent": subagent,
+                "content": content,
+                "instance_id": instance_id,
             },
         )
 

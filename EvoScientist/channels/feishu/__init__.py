@@ -1,12 +1,12 @@
+from ..channel_manager import _parse_csv, register_channel
 from .channel import FeishuChannel, FeishuConfig
-from ..channel_manager import register_channel, _parse_csv
 
 __all__ = ["FeishuChannel", "FeishuConfig"]
 
 
 def create_from_config(config) -> FeishuChannel:
     allowed = _parse_csv(config.feishu_allowed_senders)
-    proxy = config.feishu_proxy if config.feishu_proxy else None
+    proxy = config.feishu_proxy or None
     return FeishuChannel(
         FeishuConfig(
             app_id=config.feishu_app_id,
@@ -17,6 +17,7 @@ def create_from_config(config) -> FeishuChannel:
             allowed_senders=allowed,
             feishu_domain=config.feishu_domain,
             proxy=proxy,
+            subscription_mode=getattr(config, "feishu_subscription_mode", "webhook"),
         )
     )
 

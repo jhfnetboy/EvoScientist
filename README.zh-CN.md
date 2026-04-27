@@ -5,29 +5,29 @@
 
 <div align="center">
     <picture>
-      <source media="(prefers-color-scheme: light)" srcset=".github/assets/logo-dark.svg">
-      <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-light.svg">
-      <img alt="EvoScientist Logo" src=".github/assets/logo-dark.svg" width="80%">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/logo-dark.svg">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/logo-light.svg">
+      <img alt="EvoScientist Logo" src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/logo-dark.svg" width="80%">
     </picture>
 </div>
 
 <div align="center">
 <a href="https://pypi.org/project/EvoScientist/"><picture>
-  <source media="(prefers-color-scheme: light)" srcset=".github/assets/badge-pypi-light.svg">
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/badge-pypi-dark.svg">
-  <img alt="PyPI v0.0.2" src=".github/assets/badge-pypi-light.svg" height="28">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-pypi-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-pypi-dark.svg">
+  <img alt="PyPI v0.0.5" src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-pypi-light.svg" height="28">
 </picture></a><a href="https://EvoScientist.github.io/"><picture>
-  <source media="(prefers-color-scheme: light)" srcset=".github/assets/badge-website-light.svg">
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/badge-website-dark.svg">
-  <img alt="Website" src=".github/assets/badge-website-light.svg" height="28">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-website-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-website-dark.svg">
+  <img alt="Website" src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-website-light.svg" height="28">
 </picture></a><a href="https://github.com/langchain-ai/deepagents"><picture>
-  <source media="(prefers-color-scheme: light)" srcset=".github/assets/badge-framework-light.svg">
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/badge-framework-dark.svg">
-  <img alt="Framework DeepAgents" src=".github/assets/badge-framework-light.svg" height="28">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-framework-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-framework-dark.svg">
+  <img alt="Framework DeepAgents" src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-framework-light.svg" height="28">
 </picture></a><a href="https://github.com/EvoScientist/EvoScientist/blob/main/LICENSE"><picture>
-  <source media="(prefers-color-scheme: light)" srcset=".github/assets/badge-license-light.svg">
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/badge-license-dark.svg">
-  <img alt="License Apache 2.0" src=".github/assets/badge-license-light.svg" height="28">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-license-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-license-dark.svg">
+  <img alt="License Apache 2.0" src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-license-light.svg" height="28">
 </picture></a>
 </div>
 
@@ -54,19 +54,36 @@ EvoScientist 超越了传统的人在回路（Human-in-the-Loop）模式，采�
 <table>
   <tr>
     <td align="center" valign="top" width="33%">
-      <img src=".github/assets/ICAIS_awards.JPG" height="180" alt="ICAIS 2025 Awards"/>
+      <img src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/ICAIS_awards.JPG" height="180" alt="ICAIS 2025 Awards"/>
       <br />
-      <sub><b>Best Paper & Appraisal Award</b></sub>
+      <sub><b>最佳论文与评审奖</b></sub>
     </td>
     <td align="center" valign="top" width="33%">
-      <img src=".github/assets/ICAIS_best_paper.png" height="180" alt="Best Paper"/>
+      <img src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/ICAIS_best_paper.png" height="180" alt="Best Paper"/>
       <br />
-      <sub><b>AI-Generated Best Paper</b></sub>
+      <sub><b>AI 生成最佳论文</b></sub>
     </td>
     <td align="center" valign="top" width="33%">
-      <img src=".github/assets/deepresearch_bench_2.JPG" height="180" alt="DeepResearch Bench II #1"/>
+      <img src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/deepresearch_bench_2.JPG" height="180" alt="DeepResearch Bench II #1"/>
       <br />
       <sub><b>DeepResearch Bench II 第一名</b></sub>
+    </td>
+  </tr>
+</table>
+
+<br />
+
+<table>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <img src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/asta_bench_code.png" height="180" alt="AstaBench Code & Execution #1"/>
+      <br />
+      <sub><b>AstaBench 代码与执行榜第一名</b></sub>
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/asta_bench_data.png" height="180" alt="AstaBench Data Analysis #1"/>
+      <br />
+      <sub><b>AstaBench 数据分析榜第一名</b></sub>
     </td>
   </tr>
 </table>
@@ -96,16 +113,18 @@ EvoScientist 超越了传统的人在回路（Human-in-the-Loop）模式，采�
 
 - **🤖 多智能体协作** — 6 个子智能体（规划、调研、编码、调试、分析、写作）协同工作。
 - **🧠 持久化记忆** — 上下文、偏好和研究发现跨会话保持。
-- **🌐 多模型供应商** — Anthropic、OpenAI、Google、NVIDIA——一处配置，随时切换。
+- **🌐 多模型供应商** — Anthropic、OpenAI、Google、MiniMax、NVIDIA——一处配置，随时切换。
 - **📱 多渠道接入** — CLI 为中心；Telegram、Slack、飞书、微信等——共享同一智能体会话。
 - **🔬 科学工作流** — 需求采集 → 规划 → 执行 → 评估 → 撰写 → 验证。
 - **🔌 MCP 与 Skills** — 即插即用 MCP 服务器，或从 GitHub 一键安装技能包。
 
 > [!TIP]
-> 寻找开箱即用的研究技能？查看 [**EvoSkills**](https://github.com/EvoScientist/EvoSkills) — 由 **EvoScientist** 引擎驱动，结合可安装技能，端到端研究全流程一步到位。EvoSkills 同样兼容 Claude Code、Cursor、OpenClaw 等 AI 编程智能体。
+> 寻找开箱即用的研究技能？查看 [**EvoSkills**](https://github.com/EvoScientist/EvoSkills) — 由 **EvoScientist** 引擎驱动，结合可安装技能，端到端研究全流程一步到位。EvoSkills 同样兼容各类 CLI 编程智能体。
 
 ## 🔥 动态
 
+- **[2026 年 3 月 26 日]** 🥇 提交时在 [AstaBench 数据分析](https://allenai-asta-bench-leaderboard.hf.space/home) 排名第一！[**排行榜**](https://allenai-asta-bench-leaderboard.hf.space/data-analysis) 👈
+- **[2026 年 3 月 25 日]** 🥇 提交时在 [AstaBench 代码与执行](https://allenai-asta-bench-leaderboard.hf.space/home) 排名第一！[**排行榜**](https://allenai-asta-bench-leaderboard.hf.space/code-execution) 👈
 - **[2026 年 3 月 13 日]** 🚀 [**EvoScientist**](https://github.com/EvoScientist/EvoScientist) 正式亮相！
 - **[2026 年 3 月 11 日]** ⛳ 技术报告已上线！[**查看详情**](https://arxiv.org/abs/2603.08127) 👈
 - **[2026 年 3 月 6 日]** 🥇 提交时在 [DeepResearch Bench II](https://agentresearchlab.com/benchmarks/deepresearch-bench-ii/index.html#leaderboard) 排名第一！[**排行榜**](https://agentresearchlab.com/benchmarks/deepresearch-bench-ii/index.html#leaderboard) 👈
@@ -116,6 +135,7 @@ EvoScientist 超越了传统的人在回路（Human-in-the-Loop）模式，采�
 - [📦 安装](#-安装)
 - [🔑 配置](#-配置)
 - [⚡ 快速上手](#-快速上手)
+- [🍪 示例与实践](#-示例与实践)
 - [🔌 MCP 集成](#-mcp-集成)
 - [📱 渠道接入](#-渠道接入)
 - [📚 致谢](#-致谢)
@@ -150,12 +170,25 @@ uv tool install EvoScientist
 uv pip install EvoScientist
 ```
 
+### 从 GitHub 安装最新版本
+
+获取 [PyPI](https://pypi.org/project/EvoScientist/) 发布前的最新补丁：
+
+```bash
+uv pip install git+https://github.com/EvoScientist/EvoScientist.git
+```
+
 ### 开发安装
 
 ```bash
 git clone https://github.com/EvoScientist/EvoScientist.git
 cd EvoScientist
 uv sync --dev
+```
+
+enable pre-commit hooks:
+```bash
+uv run pre-commit install
 ```
 
 <details>
@@ -217,8 +250,9 @@ EvoSci onboard
 
 > [!TIP]
 > 向导将引导你完成供应商选择、密钥验证、模型选择和工作区模式设置。
+> 支持 CLI 编程智能体订阅用户通过 OAuth 直连——无需 API Key。
 
-![onboard](.github/assets/EvoScientist_onboard.png)
+![onboard](https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/EvoScientist_onboard.png)
 
 <details>
 <summary> 📟 通过环境变量手动配置</summary>
@@ -227,10 +261,11 @@ EvoSci onboard
 
 ```bash
 # 选择一个 LLM 供应商
-export ANTHROPIC_API_KEY="sk-..."   # Claude — console.anthropic.com
-export OPENAI_API_KEY="sk-..."      # GPT   — platform.openai.com
-export GOOGLE_API_KEY="AI..."       # Gemini — aistudio.google.com/api-keys
-export NVIDIA_API_KEY="nvapi-..."   # NIM   — build.nvidia.com
+export ANTHROPIC_API_KEY="sk-..."   # Claude  — console.anthropic.com
+export OPENAI_API_KEY="sk-..."      # GPT    — platform.openai.com
+export GOOGLE_API_KEY="AI..."       # Gemini  — aistudio.google.com/api-keys
+export MINIMAX_API_KEY="sk-..."     # MiniMax — platform.minimaxi.com (Anthropic-compatible)
+export NVIDIA_API_KEY="nvapi-..."   # NIM    — build.nvidia.com
 
 # 网络搜索（可选）
 export TAVILY_API_KEY="tvly-..."    # app.tavily.com
@@ -256,11 +291,14 @@ cp .env.example .env  # 填入你的密钥
 EvoSci  # 或 EvoScientist — 交互模式（默认 TUI）
 ```
 
-![demo](.github/assets/EvoScientist_cli.png)
+![demo](https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/EvoScientist_cli.png)
 
 > 运行 `EvoSci -h` 查看全部 CLI 选项。
 
-![cli help](.github/assets/EvoScientist_cli_help.png)
+![cli help](https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/EvoScientist_cli_help.png)
+
+> [!TIP]
+> 需要复制长输出？使用 `--ui cli` 切换到经典模式，即可使用终端原生复制。macOS [iTerm2](https://iterm2.com/) 用户也可以按住 `⌥ Option` 拖选文字，再 `⌘+C` 复制。
 
 <details>
 <summary>常用示例</summary>
@@ -359,6 +397,14 @@ for state in EvoScientist_agent.stream(
 
 <p align="right"><a href="#top">🔝回到顶部</a></p>
 
+## 🍪 示例与实践
+
+收集了一些官方示例、进阶用法和社区贡献的实践方案，帮助你更好地使用 EvoScientist。
+
+👉 **[浏览全部示例与实践 →](docs/README.md)**
+
+<p align="right"><a href="#top">🔝回到顶部</a></p>
+
 ## 🔌 MCP 集成
 
 通过 [MCP](https://modelcontextprotocol.io/) 服务器一条命令即可添加外部工具：
@@ -422,7 +468,7 @@ channel_enabled: "telegram,slack,feishu,qq"
 - [x] 👋 Human-in-the-loop 操作审批
 - [x] 🦾 智能体主动向人类澄清确认
 - [x] 📑 技术报告已发布
-- [ ] 🔐 OAuth 登录（Anthropic、OpenAI 等）
+- [x] 🔐 OAuth 登录（CLI 编程智能体订阅用户）
 - [ ] 📺 带工作区的 Web 应用界面
 - [ ] 📹 Demo 与教程正在制作中
 - [ ] 📊 基准测试套件即将推出
@@ -501,7 +547,7 @@ channel_enabled: "telegram,slack,feishu,qq"
 
 Jan Piotrowski, Wiktor Cupiał, Jakub Kaliski, Jakub Filipiuk, Xinhao Yi, Shuyu Guo, Andreas Sauter, Wenxiang Hu, Jacopo Urbani, Zaiqiao Meng, Jun Luo, Lun Zhou
 
-> <a href="https://xiaoyi.huawei.com/chat/research"><img src=".github/assets/xiaoyi-deepresearch.webp" height="16" alt="Xiaoyi DeepResearch" align="center" /></a> [*Xiaoyi DeepResearch*](https://xiaoyi.huawei.com/chat/research) *Team* 及更广泛的开源社区共同为本项目做出贡献。
+> <a href="https://xiaoyi.huawei.com/chat/research"><img src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/xiaoyi-deepresearch.webp" height="16" alt="Xiaoyi DeepResearch" align="center" /></a> [*Xiaoyi DeepResearch*](https://xiaoyi.huawei.com/chat/research) *Team* 及更广泛的开源社区共同为本项目做出贡献。
 
 如有任何咨询或合作意向，请联系：[**EvoScientist.ai@gmail.com**](mailto:evoscientist.ai@gmail.com)
 
@@ -509,11 +555,18 @@ Jan Piotrowski, Wiktor Cupiał, Jakub Kaliski, Jakub Filipiuk, Xinhao Yi, Shuyu 
 
 ## 🤝 贡献
 
-<img align="right" alt="EvoScientist Team" src=".github/assets/EvoScientist_team.png" width="20%" />
+<img align="right" alt="EvoScientist Team" src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/EvoScientist_team.png" width="20%" />
 
 我们欢迎各层次的开发者、研究者以及 AI 编程助手参与贡献。我们的 [贡献指南](./CONTRIBUTING.md) 同时面向人类和 AI Agent 编写，涵盖架构说明、设计模式、扩展指南和代码规范，帮助你安全高效地参与项目开发。
 
 ### 👥 社区贡献者
+
+⚗️ 加入 EvoScientist 社区，探讨 AI 驱动的科研前沿，分享实验成果，共同推动自动化科学发现的未来。
+
+- [Discord](https://discord.gg/AZ9ZMXkunY) — 实时提问、分享发现，与研究者和开发者协作交流。
+- [微信](https://github.com/EvoScientist/EvoScientist/blob/main/.github/assets/cn_info.md) — 加入中文社区，与国内研究者和开发者交流。
+
+  <img src=".github/assets/wechat_group.jpeg" alt="微信群二维码" width="200"/>
 
 每一份贡献，都让我们离 AI 驱动科学突破、造福全人类的未来更近一步。
 
@@ -547,10 +600,3 @@ Jan Piotrowski, Wiktor Cupiał, Jakub Kaliski, Jakub Filipiuk, Xinhao Yi, Shuyu 
 本项目基于 Apache License 2.0 开源——详情请见 [LICENSE](./LICENSE) 文件。
 
 <p align="right"><a href="#top">🔝回到顶部</a></p>
-
-<!-- ---
-
-<p align="center">
-  Created and maintained by <a href="https://github.com/x-izhang"><b>Xi Zhang</b></a>, built with the open-source community.
-</p> -->
-

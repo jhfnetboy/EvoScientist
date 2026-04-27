@@ -2,16 +2,17 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from EvoScientist.llm import (
-    MODELS,
     DEFAULT_MODEL,
+    MODELS,
     get_chat_model,
+    get_model_info,
     get_models_for_provider,
     list_models,
-    get_model_info,
 )
 from EvoScientist.llm.models import _MODEL_ENTRIES
-
 
 # =============================================================================
 # Test MODELS registry
@@ -29,11 +30,15 @@ class TestModelsRegistry:
         assert "anthropic" in providers
         assert "openai" in providers
         assert "google-genai" in providers
+        assert "minimax" in providers
         assert "nvidia" in providers
         assert "siliconflow" in providers
         assert "openrouter" in providers
         assert "zhipu" in providers
         assert "zhipu-code" in providers
+        assert "volcengine" in providers
+        assert "dashscope" in providers
+        assert "deepseek" in providers
 
     def test_entries_are_valid_tuples(self):
         """Test that _MODEL_ENTRIES contains valid (name, model_id, provider) tuples."""
@@ -41,13 +46,17 @@ class TestModelsRegistry:
             "anthropic",
             "openai",
             "google-genai",
+            "minimax",
             "nvidia",
             "siliconflow",
             "openrouter",
             "zhipu",
             "zhipu-code",
+            "volcengine",
+            "dashscope",
             "custom-openai",
             "custom-anthropic",
+            "deepseek",
         }
         for entry in _MODEL_ENTRIES:
             assert len(entry) == 3, f"Entry {entry} doesn't have 3 elements"
@@ -445,6 +454,216 @@ class TestThirdPartyRouting:
         call_kwargs = mock_init.call_args[1]
         assert "reasoning" not in call_kwargs
 
+    @patch("EvoScientist.llm.models.init_chat_model")
+    def test_volcengine_routes_through_openai(self, mock_init, monkeypatch):
+        """Volcengine provider should route through OpenAI with correct base_url."""
+        mock_init.return_value = "mock_model"
+        monkeypatch.setenv("VOLCENGINE_API_KEY", "ve-key-123")
+
+        get_chat_model("doubao-seed-1.6", provider="volcengine")
+
+        call_kwargs = mock_init.call_args[1]
+        assert call_kwargs["model_provider"] == "openai"
+        assert call_kwargs["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+        assert call_kwargs["api_key"] == "ve-key-123"
+
+    @patch("EvoScientist.llm.models.init_chat_model")
+    def test_dashscope_routes_through_openai(self, mock_init, monkeypatch):
+        """DashScope provider should route through OpenAI with correct base_url."""
+        mock_init.return_value = "mock_model"
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "ds-key-456")
+
+        get_chat_model("qwen-max", provider="dashscope")
+
+        call_kwargs = mock_init.call_args[1]
+        assert call_kwargs["model_provider"] == "openai"
+        assert (
+            call_kwargs["base_url"]
+            == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+        assert call_kwargs["api_key"] == "ds-key-456"
+
+    @patch("EvoScientist.llm.models.init_chat_model")
+    def test_minimax_routes_through_anthropic(self, mock_init, monkeypatch):
+        """MiniMax provider should route through Anthropic with correct base_url."""
+        mock_init.return_value = "mock_model"
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-key-123")
+
+        get_chat_model("MiniMax-M2.5", provider="minimax")
+
+        call_kwargs = mock_init.call_args[1]
+        assert call_kwargs["model_provider"] == "anthropic"
+        assert call_kwargs["base_url"] == "https://api.minimaxi.com/anthropic"
+        assert call_kwargs["api_key"] == "mm-key-123"
+
+    @patch("EvoScientist.llm.models.init_chat_model")
+    def test_minimax_gets_thinking(self, mock_init, monkeypatch):
+        """MiniMax provider should get auto-thinking (thinking-capable via Anthropic)."""
+        mock_init.return_value = "mock_model"
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
+
+        get_chat_model("MiniMax-M2.5", provider="minimax")
+
+        call_kwargs = mock_init.call_args[1]
+        assert "thinking" in call_kwargs
+        assert "reasoning" not in call_kwargs
+
+    @patch("EvoScientist.llm.models.init_chat_model")
+    def test_minimax_short_name_resolution(self, mock_init, monkeypatch):
+        """MiniMax short names should resolve to correct model IDs."""
+        mock_init.return_value = "mock_model"
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
+
+        get_chat_model("minimax-m2.5", provider="minimax")
+
+        call_kwargs = mock_init.call_args[1]
+        assert call_kwargs["model"] == "MiniMax-M2.5"
+        assert call_kwargs["model_provider"] == "anthropic"
+
+    @patch("EvoScientist.llm.models.init_chat_model")
+    def test_minimax_highspeed_model(self, mock_init, monkeypatch):
+        """MiniMax M2.5-highspeed model should resolve correctly."""
+        mock_init.return_value = "mock_model"
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
+
+        get_chat_model("minimax-m2.5-highspeed", provider="minimax")
+
+        call_kwargs = mock_init.call_args[1]
+        assert call_kwargs["model"] == "MiniMax-M2.5-highspeed"
+        assert call_kwargs["model_provider"] == "anthropic"
+        assert call_kwargs["base_url"] == "https://api.minimaxi.com/anthropic"
+
+    @patch("EvoScientist.llm.models.init_chat_model")
+    def test_custom_anthropic_via_routed_dict(self, mock_init, monkeypatch):
+        """custom-anthropic should work via _ANTHROPIC_ROUTED_PROVIDERS dict."""
+        mock_init.return_value = "mock_model"
+        monkeypatch.setenv("CUSTOM_ANTHROPIC_BASE_URL", "https://my-claude.example.com")
+        monkeypatch.setenv("CUSTOM_ANTHROPIC_API_KEY", "ca-key-789")
+
+        get_chat_model("claude-sonnet-4-6", provider="custom-anthropic")
+
+        call_kwargs = mock_init.call_args[1]
+        assert call_kwargs["model_provider"] == "anthropic"
+        assert call_kwargs["base_url"] == "https://my-claude.example.com"
+        assert call_kwargs["api_key"] == "ca-key-789"
+        # custom-anthropic is NOT thinking-capable → thinking skipped
+        assert "thinking" not in call_kwargs
+
+
+# =============================================================================
+# Test MiniMax provider
+# =============================================================================
+
+
+class TestMiniMaxProvider:
+    def test_minimax_in_anthropic_routed_providers(self):
+        """MiniMax should be registered in _ANTHROPIC_ROUTED_PROVIDERS."""
+        from EvoScientist.llm.models import _ANTHROPIC_ROUTED_PROVIDERS
+
+        assert "minimax" in _ANTHROPIC_ROUTED_PROVIDERS
+        base_url, api_key_env = _ANTHROPIC_ROUTED_PROVIDERS["minimax"]
+        assert base_url == "https://api.minimaxi.com/anthropic"
+        assert api_key_env == "MINIMAX_API_KEY"
+
+    def test_minimax_not_in_openai_routed_providers(self):
+        """MiniMax should NOT be in _OPENAI_ROUTED_PROVIDERS (moved to Anthropic)."""
+        from EvoScientist.llm.models import _OPENAI_ROUTED_PROVIDERS
+
+        assert "minimax" not in _OPENAI_ROUTED_PROVIDERS
+
+    def test_minimax_models_registered(self):
+        """MiniMax should have 4 direct model entries in _MODEL_ENTRIES."""
+        minimax_models = get_models_for_provider("minimax")
+        assert len(minimax_models) == 4
+        model_names = {name for name, _ in minimax_models}
+        assert "minimax-m2.7" in model_names
+        assert "minimax-m2.7-highspeed" in model_names
+        assert "minimax-m2.5" in model_names
+        assert "minimax-m2.5-highspeed" in model_names
+
+    def test_minimax_model_ids_correct(self):
+        """MiniMax model IDs should match the official API model names."""
+        minimax_models = get_models_for_provider("minimax")
+        model_dict = dict(minimax_models)
+        assert model_dict["minimax-m2.7"] == "MiniMax-M2.7"
+        assert model_dict["minimax-m2.5"] == "MiniMax-M2.5"
+        assert model_dict["minimax-m2.5-highspeed"] == "MiniMax-M2.5-highspeed"
+
+    def test_minimax_short_name_in_models_dict(self):
+        """MiniMax short names should be accessible via the MODELS dict."""
+        # Note: MODELS dict uses last-entry-wins, so direct minimax entries
+        # may be overridden by nvidia/siliconflow/openrouter entries.
+        # Use get_models_for_provider() for provider-specific lookups.
+        minimax_models = get_models_for_provider("minimax")
+        assert len(minimax_models) > 0
+
+
+# =============================================================================
+# Test _flatten_message_content
+# =============================================================================
+
+
+class TestFlattenMessageContent:
+    """Tests for the content-flattening utility used by OpenAI-compatible providers."""
+
+    def test_string_passthrough(self):
+        from EvoScientist.llm.models import _flatten_message_content
+
+        assert _flatten_message_content("hello") == "hello"
+
+    def test_non_list_passthrough(self):
+        from EvoScientist.llm.models import _flatten_message_content
+
+        assert _flatten_message_content(42) == 42
+        assert _flatten_message_content(None) is None
+
+    def test_text_blocks(self):
+        from EvoScientist.llm.models import _flatten_message_content
+
+        content = [
+            {"type": "text", "text": "Hello"},
+            {"type": "text", "text": "World"},
+        ]
+        assert _flatten_message_content(content) == "Hello\n\nWorld"
+
+    def test_skips_thinking_blocks(self):
+        from EvoScientist.llm.models import _flatten_message_content
+
+        content = [
+            {"type": "thinking", "text": "Let me think..."},
+            {"type": "text", "text": "The answer is 42"},
+            {"type": "reasoning", "text": "internal reasoning"},
+            {"type": "reasoning_content", "text": "more reasoning"},
+        ]
+        assert _flatten_message_content(content) == "The answer is 42"
+
+    def test_string_blocks(self):
+        from EvoScientist.llm.models import _flatten_message_content
+
+        content = ["hello", "world"]
+        assert _flatten_message_content(content) == "hello\n\nworld"
+
+    def test_mixed_blocks(self):
+        from EvoScientist.llm.models import _flatten_message_content
+
+        content = [
+            {"type": "thinking", "text": "skip me"},
+            "plain string",
+            {"type": "text", "text": "dict text"},
+        ]
+        assert _flatten_message_content(content) == "plain string\n\ndict text"
+
+    def test_empty_list(self):
+        from EvoScientist.llm.models import _flatten_message_content
+
+        assert _flatten_message_content([]) == ""
+
+    def test_only_thinking_blocks(self):
+        from EvoScientist.llm.models import _flatten_message_content
+
+        content = [{"type": "thinking", "text": "thought"}]
+        assert _flatten_message_content(content) == ""
+
 
 # =============================================================================
 # Test _apply_auto_config
@@ -573,3 +792,73 @@ class TestAutoConfig:
 
         call_kwargs = mock_init.call_args[1]
         assert call_kwargs["include_thoughts"] is True
+
+    @patch("EvoScientist.llm.models.init_chat_model")
+    def test_use_responses_api_false(self, mock_init, monkeypatch):
+        """use_responses_api=false forces Chat Completions and drops reasoning."""
+        mock_init.return_value = "mock_model"
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("EVOSCIENTIST_USE_RESPONSES_API", "false")
+
+        get_chat_model("gpt-5-nano", provider="openai")
+
+        call_kwargs = mock_init.call_args[1]
+        assert call_kwargs["use_responses_api"] is False
+        assert "reasoning" not in call_kwargs
+
+    @patch("EvoScientist.llm.models.init_chat_model")
+    def test_use_responses_api_true(self, mock_init, monkeypatch):
+        """use_responses_api=true explicitly enables the Responses API."""
+        mock_init.return_value = "mock_model"
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("EVOSCIENTIST_USE_RESPONSES_API", "true")
+
+        get_chat_model("gpt-5-nano", provider="openai")
+
+        call_kwargs = mock_init.call_args[1]
+        assert call_kwargs["use_responses_api"] is True
+        assert call_kwargs["reasoning"] == {"effort": "high", "summary": "auto"}
+
+    @patch("EvoScientist.llm.models.init_chat_model")
+    def test_use_responses_api_default_unchanged(self, mock_init, monkeypatch):
+        """Empty use_responses_api preserves default behavior (no kwarg set)."""
+        mock_init.return_value = "mock_model"
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("EVOSCIENTIST_USE_RESPONSES_API", raising=False)
+
+        get_chat_model("gpt-5-nano", provider="openai")
+
+        call_kwargs = mock_init.call_args[1]
+        assert "use_responses_api" not in call_kwargs
+        assert call_kwargs["reasoning"] == {"effort": "high", "summary": "auto"}
+
+    @pytest.mark.parametrize("env_value", ["FALSE", " false ", "False"])
+    @patch("EvoScientist.llm.models.init_chat_model")
+    def test_use_responses_api_false_normalization(
+        self, mock_init, monkeypatch, env_value
+    ):
+        """Case/whitespace variants of 'false' are normalized correctly."""
+        mock_init.return_value = "mock_model"
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("EVOSCIENTIST_USE_RESPONSES_API", env_value)
+
+        get_chat_model("gpt-5-nano", provider="openai")
+
+        call_kwargs = mock_init.call_args[1]
+        assert call_kwargs["use_responses_api"] is False
+        assert "reasoning" not in call_kwargs
+
+    @pytest.mark.parametrize("env_value", ["TRUE", " true ", "True"])
+    @patch("EvoScientist.llm.models.init_chat_model")
+    def test_use_responses_api_true_normalization(
+        self, mock_init, monkeypatch, env_value
+    ):
+        """Case/whitespace variants of 'true' are normalized correctly."""
+        mock_init.return_value = "mock_model"
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("EVOSCIENTIST_USE_RESPONSES_API", env_value)
+
+        get_chat_model("gpt-5-nano", provider="openai")
+
+        call_kwargs = mock_init.call_args[1]
+        assert call_kwargs["use_responses_api"] is True

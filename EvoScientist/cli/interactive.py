@@ -9,44 +9,59 @@ from typing import Any
 
 import typer  # type: ignore[import-untyped]
 from prompt_toolkit import PromptSession  # type: ignore[import-untyped]
-from prompt_toolkit.completion import Completer, Completion  # type: ignore[import-untyped]
-from prompt_toolkit.history import FileHistory  # type: ignore[import-untyped]
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory  # type: ignore[import-untyped]
+from prompt_toolkit.auto_suggest import (
+    AutoSuggestFromHistory,  # type: ignore[import-untyped]
+)
+from prompt_toolkit.completion import (  # type: ignore[import-untyped]
+    Completer,
+    Completion,
+)
 from prompt_toolkit.formatted_text import HTML  # type: ignore[import-untyped]
+from prompt_toolkit.history import FileHistory  # type: ignore[import-untyped]
+from prompt_toolkit.key_binding import KeyBindings  # type: ignore[import-untyped]
 from prompt_toolkit.shortcuts import CompleteStyle  # type: ignore[import-untyped]
 from prompt_toolkit.styles import Style as PtStyle  # type: ignore[import-untyped]
+from rich.markdown import Markdown
 from rich.markup import escape
+from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+import EvoScientist.cli.channel as _ch_mod
+
 from ..sessions import (
+    _format_relative_time,
+    delete_thread,
+    find_similar_threads,
     generate_thread_id,
     get_checkpointer,
+    get_thread_messages,
+    get_thread_metadata,
     list_threads,
     thread_exists,
-    find_similar_threads,
-    delete_thread,
-    get_thread_metadata,
-    get_thread_messages,
-    _format_relative_time,
 )
 from ..stream.display import console
-from .tui_runtime import run_streaming, resolve_ui_backend
-from .tui_interactive import run_textual_interactive
-from ._constants import WELCOME_SLOGANS, LOGO_LINES, LOGO_GRADIENT, build_metadata
-from .agent import _shorten_path, _create_session_workspace, _load_agent
+from ._constants import LOGO_GRADIENT, LOGO_LINES, WELCOME_SLOGANS, build_metadata
+from .agent import _create_session_workspace, _load_agent, _shorten_path
 from .channel import (
     ChannelMessage,
+    _auto_start_channel,
     _channels_is_running,
     _cmd_channel,
     _cmd_channel_stop,
-    _auto_start_channel,
     _message_queue,
     _set_channel_response,
 )
-import EvoScientist.cli.channel as _ch_mod
+from .file_mentions import complete_file_mention, resolve_file_mentions
 from .mcp_ui import _cmd_mcp
-from .skills_cmd import _cmd_list_skills, _cmd_install_skill, _cmd_uninstall_skill
+from .skills_cmd import (
+    _cmd_install_skill,
+    _cmd_install_skills,
+    _cmd_list_skills,
+    _cmd_uninstall_skill,
+)
+from .tui_interactive import run_textual_interactive
+from .tui_runtime import resolve_ui_backend, run_streaming
 
 _channel_logger = logging.getLogger(__name__)
 
@@ -66,7 +81,7 @@ def print_banner(
     ui_backend: str | None = None,
 ):
     """Print welcome banner with ASCII art logo, info line, and hint."""
-    for line, color in zip(LOGO_LINES, LOGO_GRADIENT):
+    for line, color in zip(LOGO_LINES, LOGO_GRADIENT, strict=False):
         console.print(Text(line, style=f"{color} bold"))
     info = Text()
     info.append("  ", style="dim")
@@ -97,9 +112,18 @@ def print_banner(
     info.append("\n  ", style="dim")
     info.append("Directory: ", style="dim")
     info.append(dir_display, style="magenta")
-    info.append("\n  Type ", style="#ffe082")
+    _nl_key = "Option+Enter" if sys.platform == "darwin" else "Ctrl+J"
+    info.append("\n  Enter ", style="#ffe082")
+    info.append("send", style="#ffe082 bold")
+    info.append(f" \u2022 {_nl_key} ", style="#ffe082")
+    info.append("newline", style="#ffe082 bold")
+    info.append(" \u2022 Type ", style="#ffe082")
     info.append("/", style="#ffe082 bold")
     info.append(" for commands", style="#ffe082")
+    info.append(" \u2022 ", style="#ffe082")
+    info.append("@ files", style="#ffe082 bold")
+    info.append(" \u2022 Ctrl+C ", style="#ffe082")
+    info.append("interrupt", style="#ffe082 bold")
     console.print(info)
 
 
@@ -116,6 +140,7 @@ _SLASH_COMMANDS = [
     ("/skills", "List installed skills"),
     ("/install-skill", "Add a skill from path or GitHub"),
     ("/uninstall-skill", "Remove an installed skill"),
+    ("/evoskills", "Browse and install EvoSkills (optional: /evoskills <tag>)"),
     ("/mcp", "Manage MCP servers"),
     ("/channel", "Configure messaging channels"),
     ("/compact", "Compact conversation to free context"),
@@ -149,10 +174,28 @@ _PICKER_STYLE = PtStyle.from_dict(
 
 
 class SlashCommandCompleter(Completer):
-    """Autocomplete for slash commands — triggers when input starts with '/'."""
+    """Autocomplete for slash commands and ``@file`` mentions."""
+
+    def __init__(self, workspace_dir: str | None = None) -> None:
+        self._workspace_dir = workspace_dir
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
+
+        # @file mention completion
+        if "@" in text:
+            candidates = complete_file_mention(text, self._workspace_dir)
+            if candidates:
+                # Replace from the last '@' token
+                import re as _re
+
+                m = _re.search(r"@[^\s]*$", text)
+                start = -len(m.group(0)) if m else 0
+                for path, type_hint in candidates:
+                    yield Completion(path, start_position=start, display_meta=type_hint)
+                return
+
+        # Slash command completion
         if not text.startswith("/"):
             return
         for cmd, desc in _SLASH_COMMANDS:
@@ -233,13 +276,27 @@ def cmd_interactive(
     config_dir = get_config_dir()
     config_dir.mkdir(parents=True, exist_ok=True)
     history_file = str(config_dir / "history")
+
+    # Key bindings: Enter submits, Alt+Enter (Option+Enter) inserts newline
+    _kb = KeyBindings()
+
+    @_kb.add("escape", "enter")  # Alt+Enter / Option+Enter on macOS
+    def _insert_newline(event):
+        event.current_buffer.insert_text("\n")
+
+    @_kb.add("enter")
+    def _submit(event):
+        event.current_buffer.validate_and_handle()
+
     session = PromptSession(
         history=FileHistory(history_file),
         auto_suggest=AutoSuggestFromHistory(),
-        completer=SlashCommandCompleter(),
+        completer=SlashCommandCompleter(workspace_dir=workspace_dir),
         complete_style=CompleteStyle.COLUMN,
         complete_while_typing=True,
         style=_COMPLETION_STYLE,
+        multiline=True,
+        key_bindings=_kb,
     )
 
     def _print_separator():
@@ -308,52 +365,75 @@ def cmd_interactive(
         console.print()
 
     async def _render_history(thread_id: str):
-        """Display a compact conversation history for a resumed session."""
+        """Display conversation history for a resumed session."""
         messages = await get_thread_messages(thread_id)
         if not messages:
             return
 
-        MAX_CONTENT_LEN = 200  # truncate long messages
+        HISTORY_WINDOW = 50
 
-        def _truncate(text: str) -> str:
-            text = text.strip()
-            if len(text) <= MAX_CONTENT_LEN:
-                return text
-            return text[:MAX_CONTENT_LEN] + "..."
+        # Only human and ai messages; skip tool/system
+        display = [m for m in messages if getattr(m, "type", None) in ("human", "ai")]
 
-        console.print("[dim]── Conversation history ──[/dim]")
-        for msg in messages:
+        if len(display) > HISTORY_WINDOW:
+            skipped = len(display) - HISTORY_WINDOW
+            display = display[-HISTORY_WINDOW:]
+            console.print(f"[dim]── ... {skipped} earlier messages ──[/dim]")
+        else:
+            console.print("[dim]── Conversation history ──[/dim]")
+
+        for msg in display:
             msg_type = getattr(msg, "type", None)
             content = getattr(msg, "content", "") or ""
-            # content can be a list of blocks (multimodal) — extract text
-            if isinstance(content, list):
-                parts = [
-                    b.get("text", "")
-                    for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ]
-                content = " ".join(parts) if parts else ""
 
             if msg_type == "human":
-                console.print(
-                    Text.assemble(
-                        ("\u276f ", "bold blue"),
-                        (_truncate(content), ""),
-                    )
-                )
-            elif msg_type == "ai":
-                tool_calls = getattr(msg, "tool_calls", None) or []
+                # Extract text from multimodal list
+                if isinstance(content, list):
+                    parts = [
+                        b.get("text", "")
+                        for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    ]
+                    content = " ".join(parts) if parts else ""
+                content = content.strip()
                 if content:
-                    console.print(Text(_truncate(content), style="dim"))
-                if tool_calls:
-                    names = [tc.get("name", "?") for tc in tool_calls]
                     console.print(
-                        Text(
-                            f"  \u25b6 {', '.join(names)}",
-                            style="dim italic",
+                        Text.assemble(("\u276f ", "bold blue"), (content, ""))
+                    )
+
+            elif msg_type == "ai":
+                thinking_text = ""
+                text_content = ""
+
+                if isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "thinking":
+                            thinking_text += block.get("thinking", "")
+                        elif block.get("type") == "text":
+                            text_content += block.get("text", "")
+                else:
+                    text_content = content or ""
+
+                text_content = text_content.strip()
+
+                # Thinking panel (only when show_thinking is enabled)
+                if thinking_text.strip() and show_thinking:
+                    console.print(
+                        Panel(
+                            thinking_text.strip(),
+                            title="[bold blue]\U0001f4ad Thinking[/bold blue]",
+                            border_style="blue",
+                            expand=False,
                         )
                     )
-            # Skip tool messages — they are verbose and not useful in replay
+
+                # AI response — full Markdown rendering
+                if text_content:
+                    console.print(Markdown(text_content))
+
+            # Skip tool messages — verbose and not useful in replay
 
         console.print("[dim]── End of history ──[/dim]")
         console.print()
@@ -373,27 +453,39 @@ def cmd_interactive(
 
             import questionary
 
+            from .widgets.thread_selector import _build_items
+
             choices = []
-            # Display-width-aware padding (CJK chars take 2 columns)
-            import unicodedata
-
-            def _display_width(s: str) -> int:
-                w = 0
-                for ch in s:
-                    w += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
-                return w
-
-            def _pad_to_width(s: str, target: int) -> str:
-                pad = target - _display_width(s)
-                return s + " " * max(pad, 2)
-
-            lefts = [t.get("preview", "") or t["thread_id"] for t in threads]
-            col_width = max(_display_width(s) for s in lefts) + 4
-            for t, left_text in zip(threads, lefts):
-                tid = t["thread_id"]
-                when = _format_relative_time(t.get("updated_at"))
-                label = f"{_pad_to_width(left_text, col_width)}({tid} {when})"
-                choices.append(questionary.Choice(title=label, value=tid))
+            items = _build_items(threads)
+            for item in items:
+                if item["type"] == "header":
+                    choices.append(
+                        questionary.Separator(
+                            f"\u2500\u2500 \U0001f4c2 {item['label']}"
+                        )
+                    )
+                elif item["type"] == "subheader":
+                    choices.append(questionary.Separator(f"   {item['label']}"))
+                else:
+                    t = item["thread"]
+                    tid = t["thread_id"]
+                    preview = t.get("preview", "") or ""
+                    msgs = t.get("message_count", 0)
+                    model = t.get("model", "") or ""
+                    when = _format_relative_time(t.get("updated_at"))
+                    indent = "    " if item.get("indented") else "  "
+                    parts = [f"{indent}{tid}"]
+                    if preview:
+                        parts.append(
+                            preview[:40] + "\u2026" if len(preview) > 40 else preview
+                        )
+                    parts.append(f"({msgs} msgs)")
+                    if model:
+                        parts.append(model)
+                    if when:
+                        parts.append(when)
+                    label = "  ".join(parts)
+                    choices.append(questionary.Choice(title=label, value=tid))
 
             from prompt_toolkit.layout.dimension import Dimension
             from questionary.prompts.common import InquirerControl
@@ -641,6 +733,15 @@ def cmd_interactive(
 
             queue_task = asyncio.create_task(_check_channel_queue())
 
+            # Startup hint
+            console.print(
+                Text(
+                    "  EvoScientist is your research buddy.\n"
+                    "  Tell it about your taste before cooking some meal!",
+                    style="yellow",
+                )
+            )
+
             # Auto-start channel if enabled in config
             from ..config import load_config
 
@@ -656,6 +757,30 @@ def cmd_interactive(
                     _channel_cfg,
                     send_thinking=channel_send_thinking,
                 )
+
+            # Update check — non-blocking, runs in background thread
+            import concurrent.futures
+
+            _update_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+            def _show_update_hint() -> None:
+                try:
+                    from ..update_check import _installed_version, is_update_available
+
+                    available, latest = is_update_available()
+                    if available:
+                        current = _installed_version()
+                        console.print(
+                            Text(
+                                f"  Update available: v{latest} (current: v{current}).\n"
+                                "  Run: uv tool upgrade EvoScientist",
+                                style="yellow",
+                            )
+                        )
+                except Exception:
+                    pass
+
+            _update_executor.submit(_show_update_hint)
 
             # Slogan — after channels, right before user input
             console.print(
@@ -759,6 +884,11 @@ def cmd_interactive(
                             _cmd_uninstall_skill(name)
                             continue
 
+                        if user_input.lower().startswith("/evoskills"):
+                            browse_args = user_input[len("/evoskills") :].strip()
+                            _cmd_install_skills(browse_args)
+                            continue
+
                         if user_input.lower().startswith("/mcp"):
                             _cmd_mcp(user_input[len("/mcp") :])
                             continue
@@ -793,13 +923,22 @@ def cmd_interactive(
                             console.print(render_compact_result(result))
                             continue
 
+                        # Resolve @file mentions — inject file contents inline
+                        _, message_to_send, file_warnings = resolve_file_mentions(
+                            user_input, state["workspace_dir"]
+                        )
+
                         # Stream agent response with metadata for persistence
+                        # Warnings printed here so they appear just before the
+                        # model response, not before the user input echo.
+                        for w in file_warnings:
+                            console.print(f"[yellow]⚠ {escape(w)}[/yellow]")
                         console.print()
                         meta = build_metadata(state["workspace_dir"], model)
                         run_streaming(
                             ui_backend=state["ui_backend"],
                             agent=state["agent"],
-                            message=user_input,
+                            message=message_to_send,
                             thread_id=state["thread_id"],
                             show_thinking=show_thinking,
                             interactive=True,
@@ -895,7 +1034,7 @@ def cmd_run(
             console.print(
                 "[dim]Run [bold]EvoSci onboard[/bold] to set up your API key.[/dim]"
             )
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
         else:
             console.print(f"[red]Error: {e}[/red]")
             raise

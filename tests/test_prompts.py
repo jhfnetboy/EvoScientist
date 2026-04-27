@@ -1,9 +1,9 @@
 """Tests for EvoScientist/prompts.py."""
 
 from EvoScientist.prompts import (
-    get_system_prompt,
-    EXPERIMENT_WORKFLOW,
     DELEGATION_STRATEGY,
+    EXPERIMENT_WORKFLOW,
+    get_system_prompt,
 )
 
 
@@ -39,3 +39,9 @@ class TestGetSystemPrompt:
 
     def test_shell_guidelines_mention_background(self):
         assert "background" in EXPERIMENT_WORKFLOW.lower()
+
+    def test_contains_todays_date(self):
+        from datetime import datetime
+
+        expected = datetime.now().strftime("%Y-%m-%d")
+        assert expected in get_system_prompt()

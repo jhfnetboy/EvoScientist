@@ -4,23 +4,23 @@ This module defines the Channel interface that all messaging channels
 (iMessage, WeChat, etc.) must implement.
 """
 
-from abc import ABC, abstractmethod
 import asyncio
 import logging
 import re
+from abc import ABC, abstractmethod
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable as CallableABC
+from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Callable as CallableABC
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import Any
 
 from ..paths import MEDIA_DIR
-
 from .bus.events import InboundMessage, OutboundMessage
 from .capabilities import ChannelCapabilities
 from .formatter import UnifiedFormatter
-from .plugin import ChannelPlugin, ChannelMeta
+from .plugin import ChannelMeta, ChannelPlugin
 
 _logger = logging.getLogger(__name__)
 
@@ -29,17 +29,10 @@ _logger = logging.getLogger(__name__)
 
 
 def chunk_text(text: str, limit: int) -> list[str]:
-    """Split text into chunks that respect logical boundaries.
+    """Split text into chunks that respect logical boundaries and code fences.
 
-    Splitting priority (highest to lowest):
-    1. Code block boundaries (``` fences)
-    2. Double newlines (paragraph breaks)
-    3. Single newlines
-    4. Spaces (word boundaries)
-    5. Hard cut (last resort)
-
-    Code blocks are never split mid-block when possible. If a single code
-    block exceeds the limit it is sent as its own chunk(s).
+    If a code block is split across chunks, each chunk is automatically
+    wrapped in its own fences (```...```) to maintain formatting.
 
     Args:
         text: The text to split.
@@ -55,49 +48,75 @@ def chunk_text(text: str, limit: int) -> list[str]:
 
     chunks: list[str] = []
     remaining = text
+    in_code_block = False
+    code_block_lang = ""
 
     while remaining:
-        if len(remaining) <= limit:
-            chunks.append(remaining)
-            break
+        # Effective limit is reduced if we need to add fences
+        # We reserve ~20 chars for fences (```lang\n and \n```)
+        effective_limit = limit - (20 if in_code_block else 0)
 
-        # Try to find a split point within the limit
-        segment = remaining[:limit]
+        if len(remaining) <= effective_limit:
+            segment = remaining
+            best = len(remaining)
+        else:
+            segment = remaining[:effective_limit]
+            best = -1
 
-        # 1. Prefer splitting at code block boundary (``` at line start)
-        best = -1
-        fence_pos = segment.rfind("\n```")
-        if fence_pos > 0:
-            line_end = segment.find("\n", fence_pos + 1)
-            if line_end == -1:
-                line_end = len(segment)
-            best = line_end
+            # 1. Paragraph/Line/Word boundaries
+            if not in_code_block:
+                # Paragraph
+                pos = segment.rfind("\n\n")
+                if pos > 0:
+                    best = pos
 
-        # 2. Double newline (paragraph break)
-        if best == -1:
-            pos = segment.rfind("\n\n")
-            if pos > 0:
-                best = pos
+                # Line
+                if best == -1:
+                    pos = segment.rfind("\n")
+                    if pos > 0:
+                        best = pos
 
-        # 3. Single newline
-        if best == -1:
-            pos = segment.rfind("\n")
-            if pos > 0:
-                best = pos
+                # Word
+                if best == -1:
+                    pos = segment.rfind(" ")
+                    if pos > 0:
+                        best = pos
+            else:
+                # INSIDE code block: ONLY split at newlines to avoid breaking lines of code
+                pos = segment.rfind("\n")
+                if pos > 0:
+                    best = pos
 
-        # 4. Space (word boundary)
-        if best == -1:
-            pos = segment.rfind(" ")
-            if pos > 0:
-                best = pos
+            if best == -1:
+                best = effective_limit
 
-        # 5. Hard cut
-        if best == -1:
-            best = limit
+        chunk_raw = remaining[:best].rstrip()
 
-        chunk = remaining[:best].rstrip()
-        if chunk:
-            chunks.append(chunk)
+        # Track state transitions within this raw segment
+        starts_in_code = in_code_block
+        current_lang = code_block_lang
+
+        # We use a simple count of ``` to toggle state.
+        # Note: This handles both opening and closing fences.
+        fences = list(re.finditer(r"```(\w*)", chunk_raw))
+        for f in fences:
+            if not in_code_block:
+                in_code_block = True
+                code_block_lang = f.group(1) or ""
+            else:
+                in_code_block = False
+                code_block_lang = ""
+
+        ends_in_code = in_code_block
+
+        # Build the final chunk with necessary fences
+        prefix = f"```{current_lang}\n" if starts_in_code else ""
+        suffix = "\n```" if ends_in_code else ""
+
+        final_chunk = prefix + chunk_raw + suffix
+        if final_chunk.strip():
+            chunks.append(final_chunk)
+
         remaining = remaining[best:].lstrip("\n")
 
     return chunks
@@ -262,6 +281,16 @@ class Channel(ChannelPlugin, ABC):
 
         self.config = config
 
+        # Cache STT config at startup to avoid loading it on every message
+        from ..config.settings import load_config as _load_cfg
+
+        _global = _load_cfg()
+        self._stt_enabled: bool = _global.stt_enabled
+        self._stt_language: str = _global.stt_language
+        self._stt_model: str = _global.stt_model
+        self._stt_device: str = _global.stt_device
+        self._stt_compute_type: str = _global.stt_compute_type
+
         # Auto-configure formatter from capabilities
         self._formatter = UnifiedFormatter.for_channel(self.capabilities.format_type)
         self._queue: asyncio.Queue[InboundMessage] = asyncio.Queue(
@@ -307,7 +336,7 @@ class Channel(ChannelPlugin, ABC):
         self._message_was_mentioned: dict[str, bool] = {}
 
         # Retry configuration (auto-resolved from channel name)
-        from .retry import RetryConfig, DEFAULT_RETRY, RETRY_PRESETS
+        from .retry import DEFAULT_RETRY, RETRY_PRESETS, RetryConfig
 
         self._retry_config: RetryConfig = RETRY_PRESETS.get(self.name, DEFAULT_RETRY)
 
@@ -330,11 +359,11 @@ class Channel(ChannelPlugin, ABC):
         5. MentionGatingMiddleware — filter by mention policy
         """
         from .middleware import (
-            DedupMiddleware,
             AllowListMiddleware,
-            PairingMiddleware,
+            DedupMiddleware,
             GroupHistoryMiddleware,
             MentionGatingMiddleware,
+            PairingMiddleware,
         )
 
         middlewares = []
@@ -435,7 +464,7 @@ class Channel(ChannelPlugin, ABC):
             try:
                 msg = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                 yield msg
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
     def _acquire_send_lock(self, chat_id: str) -> asyncio.Lock:
@@ -492,7 +521,11 @@ class Channel(ChannelPlugin, ABC):
                     reply_to = self._resolve_reply_to(message.reply_to, i)
                     try:
                         await self._send_with_retry(
-                            lambda _cid=chat_id, _fmt=formatted, _raw=raw, _reply=reply_to, _meta=message.metadata: (
+                            lambda _cid=chat_id,
+                            _fmt=formatted,
+                            _raw=raw,
+                            _reply=reply_to,
+                            _meta=message.metadata: (
                                 self._send_chunk(_cid, _fmt, _raw, _reply, _meta)
                             )
                         )
@@ -918,37 +951,37 @@ class Channel(ChannelPlugin, ABC):
         If STT is enabled and the message contains audio files, each audio
         file is transcribed and the result is prepended to ``raw.text``.
         """
-        if raw.media_files:
-            from ..config.settings import load_config
+        if raw.media_files and self._stt_enabled:
             from ..stt import is_audio_file, transcribe_file
 
-            cfg = load_config()
-            if cfg.stt_enabled:
-                transcripts: list[str] = []
-                transcribed_files: set[str] = set()
-                for fp in raw.media_files:
-                    if is_audio_file(fp):
-                        text = await transcribe_file(
-                            fp,
-                            language=cfg.stt_language,
-                        )
-                        if text:
-                            transcripts.append(text)
-                            transcribed_files.add(fp)
-                            _logger.info(
-                                f"[STT] {self.name}: {fp} → {text[:80]}..."
-                            )
-                if transcripts:
-                    prefix = "\n".join(transcripts)
-                    raw.text = (
-                        (prefix + "\n" + raw.text).strip() if raw.text else prefix
+            transcripts: list[str] = []
+            transcribed_files: set[str] = set()
+            for fp in raw.media_files:
+                if is_audio_file(fp):
+                    text = await transcribe_file(
+                        fp,
+                        language=self._stt_language,
+                        model=self._stt_model,
+                        device=self._stt_device,
+                        compute_type=self._stt_compute_type,
                     )
-                    # Remove annotations for transcribed files so agent
-                    # doesn't try to process the audio file itself
-                    raw.content_annotations = [
-                        a for a in raw.content_annotations
-                        if not any(fp in a for fp in transcribed_files)
-                    ]
+                    if text:
+                        transcripts.append(text)
+                        transcribed_files.add(fp)
+                        _logger.info(f"[STT] {self.name}: {fp} → {text[:80]}...")
+            if transcripts:
+                prefix = "\n".join(transcripts)
+                raw.text = (prefix + "\n" + raw.text).strip() if raw.text else prefix
+                # Remove annotations for transcribed files (exact path match)
+                # so the agent does not attempt to process the audio file itself
+                raw.content_annotations = [
+                    a
+                    for a in raw.content_annotations
+                    if not any(
+                        fp == a or a.endswith(f": {fp}]") or a == f"[voice: {fp}]"
+                        for fp in transcribed_files
+                    )
+                ]
 
         msg = await self._build_inbound_async(raw)
         if msg is None:

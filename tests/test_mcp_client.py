@@ -7,18 +7,18 @@ import pytest
 import yaml
 
 from EvoScientist.mcp.client import (
-    _interpolate_env,
-    _filter_tools,
-    _route_tools,
     _build_connections,
-    load_mcp_config,
+    _filter_tools,
+    _interpolate_env,
+    _resolve_command,
+    _route_tools,
     add_mcp_server,
     edit_mcp_server,
-    remove_mcp_server,
+    load_mcp_config,
     parse_mcp_add_args,
     parse_mcp_edit_args,
+    remove_mcp_server,
 )
-
 
 # ---- _interpolate_env ----
 
@@ -47,7 +47,7 @@ class TestInterpolateEnv:
 # ---- load_mcp_config ----
 
 
-@pytest.fixture()
+@pytest.fixture
 def mcp_config_file(monkeypatch, tmp_path):
     """Point USER_MCP_CONFIG to a temp file for isolated testing."""
     cfg = tmp_path / "mcp.yaml"
@@ -99,6 +99,56 @@ class TestLoadMcpConfig:
 # ---- _build_connections ----
 
 
+# ---- _resolve_command ----
+
+
+class TestResolveCommand:
+    def test_absolute_path_returned_as_is(self, tmp_path):
+        """Absolute paths are never modified, even if the file doesn't exist."""
+        fake = str(tmp_path / "mytool")
+        assert _resolve_command(fake) == fake
+
+    def test_found_on_path(self):
+        """Commands found via shutil.which are returned as full paths."""
+        result = _resolve_command("python")
+        assert result.endswith("python") or result.endswith("python3")
+        assert result != "python"  # resolved, not the bare name
+
+    def test_found_in_python_bin(self, tmp_path, monkeypatch):
+        """Falls back to sys.executable's directory when not in PATH."""
+
+        # Create a fake executable next to sys.executable
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        fake_exe = bin_dir / "my-mcp-tool"
+        fake_exe.write_text("#!/bin/sh\n")
+        fake_exe.chmod(0o755)
+
+        monkeypatch.setattr("shutil.which", lambda _: None)
+        monkeypatch.setattr(
+            "EvoScientist.mcp.client.sys.executable", str(bin_dir / "python")
+        )
+
+        assert _resolve_command("my-mcp-tool") == str(fake_exe)
+
+    def test_not_found_returns_original(self, monkeypatch):
+        """Returns the original command when not found anywhere (let OS report the error)."""
+        monkeypatch.setattr("shutil.which", lambda _: None)
+        monkeypatch.setattr(
+            "EvoScientist.mcp.client.sys.executable", "/nonexistent/bin/python"
+        )
+        assert _resolve_command("unknown-tool-xyz") == "unknown-tool-xyz"
+
+    def test_build_connections_resolves_command(self, monkeypatch):
+        """_build_connections uses _resolve_command so the full path appears in output."""
+        monkeypatch.setattr(
+            "EvoScientist.mcp.client._resolve_command", lambda cmd: f"/resolved/{cmd}"
+        )
+        config = {"srv": {"transport": "stdio", "command": "mytool", "args": []}}
+        conns = _build_connections(config)
+        assert conns["srv"]["command"] == "/resolved/mytool"
+
+
 class TestBuildConnections:
     def test_stdio_connection(self):
         config = {
@@ -111,7 +161,7 @@ class TestBuildConnections:
         conns = _build_connections(config)
         assert "fs" in conns
         assert conns["fs"]["transport"] == "stdio"
-        assert conns["fs"]["command"] == "npx"
+        assert conns["fs"]["command"].endswith("npx")
         assert conns["fs"]["args"] == ["-y", "server"]
 
     def test_stdio_with_env(self):
@@ -425,7 +475,7 @@ class TestRouteTools:
 # ---- add_mcp_server / remove_mcp_server ----
 
 
-@pytest.fixture()
+@pytest.fixture
 def user_mcp_dir(tmp_path, monkeypatch):
     """Redirect user MCP config to a temp directory."""
     cfg_dir = tmp_path / "config"
@@ -506,7 +556,8 @@ class TestAddMcpServer:
         add_mcp_server("a", "stdio", command="cmd1")
         add_mcp_server("b", "http", url="http://x")
         data = yaml.safe_load(user_mcp_dir.read_text())
-        assert "a" in data and "b" in data
+        assert "a" in data
+        assert "b" in data
 
 
 class TestRemoveMcpServer:
@@ -689,3 +740,171 @@ class TestParseMcpEditArgs:
     def test_no_fields_raises(self):
         with pytest.raises(ValueError, match="No fields"):
             parse_mcp_edit_args(["srv"])
+
+
+# ---- uv tool compatibility ----
+
+
+class TestUvToolCompat:
+    """Tests for uv tool environment detection and compatible install helpers."""
+
+    # -- _is_uv_tool_env --
+
+    def test_is_uv_tool_env_false_when_no_virtual_env(self, monkeypatch):
+        from EvoScientist.mcp.registry import _is_uv_tool_env
+
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        assert _is_uv_tool_env() is False
+
+    def test_is_uv_tool_env_false_for_regular_venv(self, monkeypatch):
+        from EvoScientist.mcp.registry import _is_uv_tool_env
+
+        monkeypatch.setenv("VIRTUAL_ENV", "/home/user/projects/myapp/.venv")
+        assert _is_uv_tool_env() is False
+
+    def test_is_uv_tool_env_true_unix(self, monkeypatch):
+        from EvoScientist.mcp.registry import _is_uv_tool_env
+
+        monkeypatch.setenv(
+            "VIRTUAL_ENV", "/home/user/.local/share/uv/tools/evoscientist"
+        )
+        assert _is_uv_tool_env() is True
+
+    def test_is_uv_tool_env_true_windows_backslashes(self, monkeypatch):
+        from EvoScientist.mcp.registry import _is_uv_tool_env
+
+        monkeypatch.setenv(
+            "VIRTUAL_ENV", r"C:\Users\user\AppData\Local\uv\tools\evoscientist"
+        )
+        assert _is_uv_tool_env() is True
+
+    # -- pip_install_hint --
+
+    def test_pip_install_hint_uv_tool(self, monkeypatch):
+        import EvoScientist.mcp.registry as reg
+
+        monkeypatch.setattr(reg, "_is_uv_tool_env", lambda: True)
+        hint = reg.pip_install_hint()
+        assert "uv tool install --reinstall evoscientist --with" in hint
+
+    def test_pip_install_hint_uv_no_tool(self, monkeypatch):
+        import EvoScientist.mcp.registry as reg
+
+        monkeypatch.setattr(reg, "_is_uv_tool_env", lambda: False)
+        monkeypatch.setattr(
+            reg.shutil, "which", lambda x: "/usr/bin/uv" if x == "uv" else None
+        )
+        assert reg.pip_install_hint() == "uv pip install"
+
+    def test_pip_install_hint_plain_pip(self, monkeypatch):
+        import EvoScientist.mcp.registry as reg
+
+        monkeypatch.setattr(reg, "_is_uv_tool_env", lambda: False)
+        monkeypatch.setattr(reg.shutil, "which", lambda x: None)
+        assert reg.pip_install_hint() == "pip install"
+
+    # -- install_pip_package --
+
+    def test_install_pip_package_uses_python_flag_when_uv_available(self, monkeypatch):
+        import sys
+
+        import EvoScientist.mcp.registry as reg
+
+        captured: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append(cmd)
+            ns = type("R", (), {"returncode": 0})()
+            return ns
+
+        monkeypatch.setattr(
+            reg.shutil, "which", lambda x: "/usr/bin/uv" if x == "uv" else None
+        )
+        monkeypatch.setattr(reg.subprocess, "run", fake_run)
+        result = reg.install_pip_package("some-package")
+        assert result is True
+        assert len(captured) == 1
+        cmd = captured[0]
+        assert "uv" in cmd[0]
+        assert "--python" in cmd
+        assert sys.executable in cmd
+
+    def test_install_pip_package_falls_back_to_pip_when_no_uv(self, monkeypatch):
+        import sys
+
+        import EvoScientist.mcp.registry as reg
+
+        captured: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append(cmd)
+            ns = type("R", (), {"returncode": 0})()
+            return ns
+
+        monkeypatch.setattr(reg.shutil, "which", lambda x: None)
+        monkeypatch.setattr(reg.subprocess, "run", fake_run)
+        reg.install_pip_package("some-package")
+        assert len(captured) == 1
+        assert sys.executable in captured[0]
+        assert "-m" in captured[0]
+        assert "pip" in captured[0]
+
+    # -- _resolve_command_path --
+
+    def test_resolve_command_path_absolute_passthrough(self):
+        from EvoScientist.mcp.registry import _resolve_command_path
+
+        assert _resolve_command_path("/usr/bin/my-tool") == "/usr/bin/my-tool"
+
+    def test_resolve_command_path_found_in_bin_dir(self, monkeypatch, tmp_path):
+        import sys
+
+        import EvoScientist.mcp.registry as reg
+
+        # Create a fake executable in a temp bin dir
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        fake_exe = bin_dir / "my-mcp-server"
+        fake_exe.touch()
+        fake_exe.chmod(0o755)
+
+        # Point sys.executable to something in that bin dir
+        fake_python = bin_dir / "python"
+        fake_python.touch()
+        monkeypatch.setattr(sys, "executable", str(fake_python))
+        # Ensure shutil.which won't find it on PATH
+        monkeypatch.setattr(reg.shutil, "which", lambda x: None)
+
+        result = reg._resolve_command_path("my-mcp-server")
+        assert result == str(fake_exe)
+
+    def test_resolve_command_path_windows_exe_suffix(self, monkeypatch, tmp_path):
+        import os
+        import sys
+
+        import EvoScientist.mcp.registry as reg
+
+        if os.name != "nt":
+            pytest.skip("Windows-only behaviour")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        fake_exe = bin_dir / "my-mcp-server.exe"
+        fake_exe.touch()
+        monkeypatch.setattr(sys, "executable", str(bin_dir / "python.exe"))
+        monkeypatch.setattr(reg.shutil, "which", lambda x: None)
+
+        result = reg._resolve_command_path("my-mcp-server")
+        assert result == str(fake_exe)
+
+    def test_resolve_command_path_returns_bare_when_not_found(
+        self, monkeypatch, tmp_path
+    ):
+        import sys
+
+        import EvoScientist.mcp.registry as reg
+
+        monkeypatch.setattr(reg.shutil, "which", lambda x: None)
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "bin" / "python"))
+        result = reg._resolve_command_path("nonexistent-tool")
+        assert result == "nonexistent-tool"

@@ -8,12 +8,12 @@ with the following priority (highest to lowest):
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, asdict, fields
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-
+from dotenv import find_dotenv, load_dotenv
 
 # =============================================================================
 # Configuration paths
@@ -66,9 +66,13 @@ class EvoScientistConfig:
     openai_auth_mode: str = "api_key"  # "api_key" | "oauth"
     nvidia_api_key: str = ""
     google_api_key: str = ""
+    minimax_api_key: str = ""
     siliconflow_api_key: str = ""
     openrouter_api_key: str = ""
+    deepseek_api_key: str = ""
     zhipu_api_key: str = ""
+    volcengine_api_key: str = ""
+    dashscope_api_key: str = ""
     custom_openai_api_key: str = ""
     custom_openai_base_url: str = ""
     custom_anthropic_api_key: str = ""
@@ -126,6 +130,7 @@ class EvoScientistConfig:
     feishu_allowed_senders: str = ""
     feishu_domain: str = "https://open.feishu.cn"
     feishu_proxy: str = ""
+    feishu_subscription_mode: str = "webhook"  # "webhook" | "websocket"
 
     # WeChat Settings
     wechat_backend: str = "wecom"
@@ -197,9 +202,18 @@ class EvoScientistConfig:
     # DM access control policy
     dm_policy: str = "allowlist"
 
+    # OpenAI API mode - "" = auto, "true" = force Responses, "false" = force Completions
+    use_responses_api: str = ""
+
+    # ccproxy
+    ccproxy_port: int = 8000
+
     # STT (Speech-to-Text) Settings
     stt_enabled: bool = False
     stt_language: str = "auto"  # "auto" | "zh" | "en"
+    stt_model: str = ""  # override model id; empty = auto-select by language
+    stt_device: str = "cpu"  # "cpu" | "cuda"
+    stt_compute_type: str = "int8"  # "int8" | "float16" | "float32"
 
 
 # =============================================================================
@@ -349,9 +363,13 @@ _ENV_MAPPINGS = {
     "openai_auth_mode": "EVOSCIENTIST_OPENAI_AUTH_MODE",
     "nvidia_api_key": "NVIDIA_API_KEY",
     "google_api_key": "GOOGLE_API_KEY",
+    "minimax_api_key": "MINIMAX_API_KEY",
     "siliconflow_api_key": "SILICONFLOW_API_KEY",
     "openrouter_api_key": "OPENROUTER_API_KEY",
+    "deepseek_api_key": "DEEPSEEK_API_KEY",
     "zhipu_api_key": "ZHIPU_API_KEY",
+    "volcengine_api_key": "VOLCENGINE_API_KEY",
+    "dashscope_api_key": "DASHSCOPE_API_KEY",
     "custom_openai_api_key": "CUSTOM_OPENAI_API_KEY",
     "custom_openai_base_url": "CUSTOM_OPENAI_BASE_URL",
     "custom_anthropic_api_key": "CUSTOM_ANTHROPIC_API_KEY",
@@ -361,6 +379,8 @@ _ENV_MAPPINGS = {
     "default_mode": "EVOSCIENTIST_DEFAULT_MODE",
     "default_workdir": "EVOSCIENTIST_WORKSPACE_DIR",
     "ui_backend": "EVOSCIENTIST_UI_BACKEND",
+    "ccproxy_port": "EVOSCIENTIST_CCPROXY_PORT",
+    "use_responses_api": "EVOSCIENTIST_USE_RESPONSES_API",
 }
 
 
@@ -381,6 +401,8 @@ def get_effective_config(
     Returns:
         EvoScientistConfig with merged values.
     """
+    load_dotenv(find_dotenv(usecwd=True), override=True)
+
     # Start with file config (includes defaults for missing values)
     config = load_config()
     data = asdict(config)
@@ -425,12 +447,20 @@ def apply_config_to_env(config: EvoScientistConfig) -> None:
         os.environ["NVIDIA_API_KEY"] = config.nvidia_api_key
     if config.google_api_key and not os.environ.get("GOOGLE_API_KEY"):
         os.environ["GOOGLE_API_KEY"] = config.google_api_key
+    if config.minimax_api_key and not os.environ.get("MINIMAX_API_KEY"):
+        os.environ["MINIMAX_API_KEY"] = config.minimax_api_key
     if config.siliconflow_api_key and not os.environ.get("SILICONFLOW_API_KEY"):
         os.environ["SILICONFLOW_API_KEY"] = config.siliconflow_api_key
     if config.openrouter_api_key and not os.environ.get("OPENROUTER_API_KEY"):
         os.environ["OPENROUTER_API_KEY"] = config.openrouter_api_key
+    if config.deepseek_api_key and not os.environ.get("DEEPSEEK_API_KEY"):
+        os.environ["DEEPSEEK_API_KEY"] = config.deepseek_api_key
     if config.zhipu_api_key and not os.environ.get("ZHIPU_API_KEY"):
         os.environ["ZHIPU_API_KEY"] = config.zhipu_api_key
+    if config.volcengine_api_key and not os.environ.get("VOLCENGINE_API_KEY"):
+        os.environ["VOLCENGINE_API_KEY"] = config.volcengine_api_key
+    if config.dashscope_api_key and not os.environ.get("DASHSCOPE_API_KEY"):
+        os.environ["DASHSCOPE_API_KEY"] = config.dashscope_api_key
     if config.custom_openai_api_key and not os.environ.get("CUSTOM_OPENAI_API_KEY"):
         os.environ["CUSTOM_OPENAI_API_KEY"] = config.custom_openai_api_key
     if config.custom_openai_base_url and not os.environ.get("CUSTOM_OPENAI_BASE_URL"):
@@ -447,3 +477,7 @@ def apply_config_to_env(config: EvoScientistConfig) -> None:
         os.environ["OLLAMA_BASE_URL"] = config.ollama_base_url
     if config.tavily_api_key and not os.environ.get("TAVILY_API_KEY"):
         os.environ["TAVILY_API_KEY"] = config.tavily_api_key
+    if config.use_responses_api and not os.environ.get(
+        "EVOSCIENTIST_USE_RESPONSES_API"
+    ):
+        os.environ["EVOSCIENTIST_USE_RESPONSES_API"] = config.use_responses_api

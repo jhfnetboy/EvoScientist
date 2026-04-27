@@ -286,9 +286,9 @@ Do not fabricate citations or URLs.
 Capture evaluation protocols (splits, metrics, calibration) and known failure modes.
 
 ## Available Tools
-1. `tavily_search` — Web search for information
-2. `think_tool` — Reflect on findings and plan next steps
-3. `read_file` — Read skill instructions when a skill matches the task (paths shown in your available skills listing)
+- `think_tool` — Reflect on findings and plan next steps
+- `read_file` — Read skill instructions when a skill matches the task (paths shown in your available skills listing)
+- Optionally, some web search tools to find information online.
 
 **CRITICAL:** Use `think_tool` after each search
 
@@ -332,9 +332,17 @@ Finding one with context [1]. Another insight [2].
 
 
 def get_system_prompt() -> str:
-    """Generate the complete system prompt.
+    """Generate the complete system prompt with today's date.
 
     Returns:
         Combined system prompt string.
     """
-    return EXPERIMENT_WORKFLOW + "\n" + DELEGATION_STRATEGY
+    from datetime import datetime
+
+    date = datetime.now().strftime("%Y-%m-%d")
+    return (
+        f"Today's date is {date}.\n\n"
+        + EXPERIMENT_WORKFLOW
+        + "\n"
+        + DELEGATION_STRATEGY
+    )

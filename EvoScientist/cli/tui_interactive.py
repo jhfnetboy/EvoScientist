@@ -10,59 +10,42 @@ import asyncio
 import logging
 import queue
 import random
-import shlex
-from typing import Any, Callable
+import sys
+from collections.abc import Callable
+from typing import Any, ClassVar
 
 from rich.console import Group
-from rich.table import Table
 from rich.text import Text
 
 import EvoScientist.cli.channel as _ch_mod
-from .channel import (
-    ChannelMessage,
-    _channels_is_running,
-    _channels_running_list,
-    _channels_stop,
-    _auto_start_channel,
-    _message_queue,
-    _set_channel_response,
-)
+
+from ..commands import CommandContext
+from ..commands import manager as cmd_manager
+from ..config.settings import get_config_dir
 from ..sessions import (
-    _format_relative_time,
-    delete_thread,
     find_similar_threads,
     generate_thread_id,
     get_checkpointer,
     get_thread_messages,
     get_thread_metadata,
-    list_threads,
     thread_exists,
 )
-from ..config.settings import get_config_dir
 from ..stream.events import stream_agent_events
-from ..stream.state import StreamState, _INTERNAL_TOOLS
+from ..stream.state import _INTERNAL_TOOLS, StreamState
+from ._constants import LOGO_GRADIENT, LOGO_LINES, WELCOME_SLOGANS, build_metadata
+from .channel import (
+    ChannelMessage,
+    _auto_start_channel,
+    _channels_is_running,
+    _channels_running_list,
+    _channels_stop,
+    _message_queue,
+    _set_channel_response,
+)
+from .file_mentions import complete_file_mention, resolve_file_mentions
 from .history_suggester import HistorySuggester
 
-from ._constants import LOGO_LINES, LOGO_GRADIENT, WELCOME_SLOGANS, build_metadata
-
 _channel_logger = logging.getLogger(__name__)
-
-_TUI_SLASH_COMMANDS = [
-    ("/current", "Show current session info"),
-    ("/threads", "List recent sessions"),
-    ("/resume", "Resume a previous session"),
-    ("/delete", "Delete a saved session"),
-    ("/new", "Start a new session"),
-    ("/clear", "Clear chat history"),
-    ("/skills", "List installed skills"),
-    ("/install-skill", "Add a skill from path or GitHub"),
-    ("/uninstall-skill", "Remove an installed skill"),
-    ("/mcp", "Manage MCP servers"),
-    ("/channel", "Configure messaging channels"),
-    ("/compact", "Compact conversation to free context"),
-    ("/help", "Show available commands"),
-    ("/exit", "Quit EvoScientist"),
-]
 
 
 def _shorten_path(path: str) -> str:
@@ -90,7 +73,7 @@ def _build_welcome_banner(
         channels: List of (name, ok, detail) tuples for the channels panel.
     """
     banner = Text()
-    for line, color in zip(LOGO_LINES, LOGO_GRADIENT):
+    for line, color in zip(LOGO_LINES, LOGO_GRADIENT, strict=False):
         banner.append(f"{line}\n", style=f"bold {color}")
 
     # Info line — matches CLI print_banner format
@@ -124,9 +107,18 @@ def _build_welcome_banner(
     info.append("\n  ", style="dim")
     info.append("Directory: ", style="dim")
     info.append(dir_display, style="magenta")
-    info.append("\n  Type ", style="#ffe082")
+    _nl_key = "Option+Enter" if sys.platform == "darwin" else "Ctrl+J"
+    info.append("\n  Enter ", style="#ffe082")
+    info.append("send", style="#ffe082 bold")
+    info.append(f" \u2022 {_nl_key} ", style="#ffe082")
+    info.append("newline", style="#ffe082 bold")
+    info.append(" \u2022 Type ", style="#ffe082")
     info.append("/", style="#ffe082 bold")
     info.append(" for commands", style="#ffe082")
+    info.append(" \u2022 ", style="#ffe082")
+    info.append("@ files", style="#ffe082 bold")
+    info.append(" \u2022 Ctrl+C ", style="#ffe082")
+    info.append("interrupt", style="#ffe082 bold")
     banner.append_text(info)
 
     slogan = Text(f"\n  {random.choice(WELCOME_SLOGANS)}", style="dim italic")
@@ -196,21 +188,22 @@ def run_textual_interactive(
         from textual.binding import Binding
         from textual.containers import Container, Horizontal, VerticalScroll
         from textual.events import MouseUp
-        from textual.widgets import Input, Static
+        from textual.widgets import Static
 
-        from .clipboard import copy_selection_to_clipboard
+        from .clipboard import copy_selection_to_clipboard, get_clipboard_text
         from .widgets import (
-            LoadingWidget,
-            ThinkingWidget,
-            SummarizationWidget,
             AssistantMessage,
-            ToolCallWidget,
+            LoadingWidget,
             SubAgentWidget,
-            TodoWidget,
-            UserMessage,
+            SummarizationWidget,
             SystemMessage,
+            ThinkingWidget,
+            TodoWidget,
+            ToolCallWidget,
             UsageWidget,
+            UserMessage,
         )
+        from .widgets.chat_input import ChatTextArea
     except Exception as e:  # pragma: no cover - runtime fallback path
         raise RuntimeError(
             "Textual TUI backend requires 'textual'. Run: pip install textual"
@@ -218,6 +211,10 @@ def run_textual_interactive(
 
     class EvoTextualInteractiveApp(App[None]):  # type: ignore[type-arg]
         """Deep-Agents-style full-screen TUI with independent widget rendering."""
+
+        @property
+        def supports_interactive(self) -> bool:
+            return True
 
         CSS = """
         Screen {
@@ -240,7 +237,9 @@ def run_textual_interactive(
             background: #16161a;
         }
         #input-row {
-            height: 3;
+            height: auto;
+            min-height: 3;
+            max-height: 10;
             border: solid #0284c7;
             background: #1e1f26;
             padding: 0 1;
@@ -253,6 +252,8 @@ def run_textual_interactive(
         }
         #prompt {
             width: 1fr;
+            min-height: 1;
+            max-height: 8;
             border: none;
             background: transparent;
             color: #e5e7eb;
@@ -282,8 +283,10 @@ def run_textual_interactive(
             padding: 0 1;
         }
         """
-        BINDINGS = [
-            Binding("ctrl+c", "request_quit", "Quit", show=False),
+        BINDINGS: ClassVar[list[Binding]] = [
+            Binding("ctrl+c", "request_quit", "Quit", show=False, priority=True),
+            Binding("ctrl+v", "paste_clipboard", "Paste", show=False),
+            Binding("tab", "tab_complete", show=False, priority=True),
             Binding("up", "edit_queued", show=False, priority=True),
             Binding("down", "down_delegate", show=False, priority=True),
             Binding("escape", "cancel_queued", show=False, priority=True),
@@ -321,7 +324,123 @@ def run_textual_interactive(
             self._approval_future: asyncio.Future | None = None
             self._ask_user_future: asyncio.Future | None = None
             self._picker_future: asyncio.Future | None = None
+            self._browser_future: asyncio.Future | None = None
+            self._mcp_browser_future: asyncio.Future | None = None
             self._history_suggester = HistorySuggester(get_config_dir() / "history")
+            self._history_index: int = -1  # -1 = not browsing history
+            self._history_saved_input: str = ""  # saved current input before browsing
+            self._background_tasks: set[asyncio.Task] = set()
+            self._quit_pending: bool = False
+
+        # ── CommandUI implementation ─────────────────────────
+
+        def append_system(self, text: str, style: str = "dim") -> None:
+            self._append_system(text, style)
+
+        def mount_renderable(self, renderable: Any) -> None:
+            self._mount_renderable(renderable)
+
+        async def wait_for_thread_pick(
+            self, threads: list[dict], current_thread: str, title: str
+        ) -> str | None:
+            from .widgets.thread_selector import ThreadPickerWidget
+
+            container = self.query_one("#chat", VerticalScroll)
+            picker = ThreadPickerWidget(
+                threads,
+                current_thread=current_thread,
+                title=title,
+            )
+            await container.mount(picker)
+            container.scroll_end(animate=False)
+            picker.focus()
+
+            return await self._wait_for_thread_pick(picker)
+
+        async def wait_for_skill_browse(
+            self, index: list[dict], installed_names: set[str], pre_filter_tag: str
+        ) -> list[str] | None:
+            from .widgets.skill_browser import SkillBrowserWidget
+
+            container = self.query_one("#chat", VerticalScroll)
+            browser = SkillBrowserWidget(
+                index,
+                installed_names,
+                pre_filter_tag=pre_filter_tag,
+            )
+            await container.mount(browser)
+            container.scroll_end(animate=False)
+            browser.focus()
+
+            return await self._wait_for_skill_browse(browser)
+
+        async def wait_for_mcp_browse(
+            self, servers: list, installed_names: set[str], pre_filter_tag: str
+        ) -> list | None:
+            from .widgets.mcp_browser import MCPBrowserWidget
+
+            container = self.query_one("#chat", VerticalScroll)
+            browser = MCPBrowserWidget(
+                servers,
+                installed_names,
+                pre_filter_tag=pre_filter_tag,
+            )
+            await container.mount(browser)
+            container.scroll_end(animate=False)
+            browser.focus()
+
+            return await self._wait_for_mcp_browse(browser)
+
+        def clear_chat(self) -> None:
+            container = self.query_one("#chat", VerticalScroll)
+            welcome = self.query_one("#welcome", Static)
+            for child in list(container.children):
+                if child is not welcome:
+                    child.remove()
+
+        def request_quit(self) -> None:
+            self.action_request_quit()
+
+        def start_new_session(self) -> None:
+            # Clear all widgets except #welcome
+            self.clear_chat()
+
+            if not workspace_fixed:
+                self._workspace_dir = create_session_workspace(run_name)
+            self._conversation_tid = generate_thread_id()
+            self._agent = load_agent(
+                workspace_dir=self._workspace_dir,
+                checkpointer=self._checkpointer,
+            )
+            if _channels_is_running():
+                _ch_mod._cli_agent = self._agent
+                _ch_mod._cli_thread_id = self._conversation_tid
+            self._render_welcome()
+            self._render_status()
+            self.append_system(f"New session: {self._conversation_tid}", style="green")
+
+        async def handle_session_resume(
+            self, thread_id: str, workspace_dir: str | None = None
+        ) -> None:
+            if workspace_dir:
+                self._workspace_dir = workspace_dir
+
+            self._conversation_tid = thread_id
+            self._agent = load_agent(
+                workspace_dir=self._workspace_dir,
+                checkpointer=self._checkpointer,
+            )
+            if _channels_is_running():
+                _ch_mod._cli_agent = self._agent
+                _ch_mod._cli_thread_id = self._conversation_tid
+            self._render_welcome()
+            self._render_status()
+            self.append_system(f"Resumed session: {thread_id}", style="green")
+            await self._render_history(thread_id)
+
+        async def flush(self) -> None:
+            """No-op for TUI, messages are already delivered incrementally."""
+            pass
 
         # ── Layout ─────────────────────────────────────────────
 
@@ -336,10 +455,9 @@ def run_textual_interactive(
                 yield Static("", id="completions")
                 with Horizontal(id="input-row"):
                     yield Static(">", id="input-cursor")
-                    yield Input(
+                    yield ChatTextArea(
                         placeholder="Type message (/ for commands)",
                         id="prompt",
-                        suggester=self._history_suggester,
                     )
 
             yield Static("", id="status")
@@ -347,7 +465,9 @@ def run_textual_interactive(
         def on_mount(self) -> None:
             self._render_welcome()
             self._render_status()
-            self.query_one("#prompt", Input).focus()
+            prompt = self.query_one("#prompt", ChatTextArea)
+            prompt.before_submit = self._handle_completion_enter
+            prompt.focus()
             # Show resume status
             if self._resume_warning:
                 self._append_system(self._resume_warning, style="yellow")
@@ -361,8 +481,37 @@ def run_textual_interactive(
                         self._render_history(self._conversation_tid)
                     )
                 )
+            # Startup notifications
+            self.notify(
+                "EvoScientist is your research buddy.\n"
+                "Tell it about your taste before cooking some meal!",
+                severity="warning",
+                timeout=10,
+            )
+            self.run_worker(
+                self._check_for_updates, exclusive=True, group="update-check"
+            )
             # Auto-start channels
             self._start_channels()
+
+        # ── Update check ──────────────────────────────────────
+
+        async def _check_for_updates(self) -> None:
+            """Check PyPI for a newer EvoScientist version and notify."""
+            try:
+                from ..update_check import _installed_version, is_update_available
+
+                available, latest = await asyncio.to_thread(is_update_available)
+                if available:
+                    current = _installed_version()
+                    self.notify(
+                        f"Update available: v{latest} (current: v{current}).\n"
+                        "Run: uv tool upgrade EvoScientist",
+                        severity="information",
+                        timeout=15,
+                    )
+            except Exception:
+                _channel_logger.debug("Background update check failed", exc_info=True)
 
         # ── Channel integration ────────────────────────────────
 
@@ -403,7 +552,7 @@ def run_textual_interactive(
 
         # ── Widget helpers ─────────────────────────────────────
 
-        def _append_system(self, text: str, *, style: str = "dim") -> None:
+        def _append_system(self, text: str, style: str = "dim") -> None:
             """Mount a SystemMessage widget into #chat."""
             container = self.query_one("#chat", VerticalScroll)
             container.mount(SystemMessage(text, msg_style=style))
@@ -424,7 +573,7 @@ def run_textual_interactive(
             self._approval_future = asyncio.get_event_loop().create_future()
             try:
                 return await asyncio.wait_for(self._approval_future, timeout=300)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError):
                 return None
             finally:
                 self._approval_future = None
@@ -446,7 +595,7 @@ def run_textual_interactive(
 
             try:
                 result = await asyncio.wait_for(self._ask_user_future, timeout=300)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError):
                 ask_w.action_cancel()
                 return {"status": "cancelled"}
             finally:
@@ -468,7 +617,7 @@ def run_textual_interactive(
             self._picker_future = asyncio.get_event_loop().create_future()
             try:
                 return await asyncio.wait_for(self._picker_future, timeout=120)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError):
                 return None
             finally:
                 self._picker_future = None
@@ -476,6 +625,7 @@ def run_textual_interactive(
                     picker_widget.remove()
                 except Exception:
                     pass
+                self.query_one("#prompt", ChatTextArea).focus()
 
         def on_thread_picker_widget_picked(self, event) -> None:  # type: ignore[override]
             """Handle ThreadPickerWidget.Picked message."""
@@ -487,6 +637,61 @@ def run_textual_interactive(
             if self._picker_future and not self._picker_future.done():
                 self._picker_future.set_result(None)
 
+        async def _wait_for_skill_browse(self, browser_widget) -> list[str] | None:
+            """Wait for user to complete skill browsing.
+
+            Returns list of install sources, or None on cancel/timeout.
+            """
+            self._browser_future = asyncio.get_event_loop().create_future()
+            try:
+                return await asyncio.wait_for(self._browser_future, timeout=300)
+            except (TimeoutError, asyncio.CancelledError):
+                return None
+            finally:
+                self._browser_future = None
+                try:
+                    browser_widget.remove()
+                except Exception:
+                    pass
+                self.query_one("#prompt", ChatTextArea).focus()
+
+        def on_skill_browser_widget_confirmed(self, event) -> None:  # type: ignore[override]
+            """Handle SkillBrowserWidget.Confirmed message."""
+            if self._browser_future and not self._browser_future.done():
+                self._browser_future.set_result(event.install_sources)
+
+        def on_skill_browser_widget_cancelled(self, event) -> None:  # type: ignore[override]
+            """Handle SkillBrowserWidget.Cancelled message."""
+            if self._browser_future and not self._browser_future.done():
+                self._browser_future.set_result(None)
+
+        # ── MCP browser ───────────────────────────────────────
+
+        async def _wait_for_mcp_browse(self, browser_widget) -> list | None:
+            """Wait for user to complete MCP server browsing."""
+            self._mcp_browser_future = asyncio.get_event_loop().create_future()
+            try:
+                return await asyncio.wait_for(self._mcp_browser_future, timeout=300)
+            except (TimeoutError, asyncio.CancelledError):
+                return None
+            finally:
+                self._mcp_browser_future = None
+                try:
+                    browser_widget.remove()
+                except Exception:
+                    pass
+                self.query_one("#prompt", ChatTextArea).focus()
+
+        def on_mcpbrowser_widget_confirmed(self, event) -> None:  # type: ignore[override]
+            """Handle MCPBrowserWidget.Confirmed message."""
+            if self._mcp_browser_future and not self._mcp_browser_future.done():
+                self._mcp_browser_future.set_result(event.entries)
+
+        def on_mcpbrowser_widget_cancelled(self, event) -> None:  # type: ignore[override]
+            """Handle MCPBrowserWidget.Cancelled message."""
+            if self._mcp_browser_future and not self._mcp_browser_future.done():
+                self._mcp_browser_future.set_result(None)
+
         # ── Streaming core ─────────────────────────────────────
 
         async def _stream_with_widgets(
@@ -497,6 +702,7 @@ def run_textual_interactive(
             on_todo_cb: Callable[[list[dict]], None] | None = None,
             on_media_cb: Callable[[str], None] | None = None,
             skip_user_message: bool = False,
+            file_warnings: list[str] | None = None,
             channel_hitl_fn: Callable[[list], list[dict] | None] | None = None,
             channel_ask_user_fn: Callable[[dict], dict] | None = None,
         ) -> str:
@@ -520,6 +726,10 @@ def run_textual_interactive(
             # 1. Mount user message + loading spinner
             if not skip_user_message:
                 await container.mount(UserMessage(user_text))
+            # Mount file warnings after user message so they appear in the
+            # correct position (between user input and model response).
+            for w in file_warnings or []:
+                self._append_system(f"⚠ {w}", style="yellow")
             loading = LoadingWidget()
             await container.mount(loading)
             container.scroll_end(animate=False)
@@ -930,13 +1140,13 @@ def run_textual_interactive(
                                     )
                                     _ask_fn = channel_ask_user_fn
                                     result = await asyncio.to_thread(
-                                        lambda: _ask_fn(event),
+                                        lambda f=_ask_fn, e=event: f(e),
                                     )
                                 else:
                                     # Interactive TUI: display widget, collect via arrow keys
                                     from .widgets.ask_user_widget import AskUserWidget
 
-                                    _prompt = self.query_one("#prompt", Input)
+                                    _prompt = self.query_one("#prompt", ChatTextArea)
                                     _prompt.disabled = True
                                     ask_w = AskUserWidget(questions)
                                     await container.mount(ask_w)
@@ -948,7 +1158,9 @@ def run_textual_interactive(
                                     except Exception:
                                         pass
                                     _prompt.disabled = False
-                                from langgraph.types import Command  # type: ignore[import-untyped]
+                                from langgraph.types import (
+                                    Command,  # type: ignore[import-untyped]
+                                )
 
                                 _stream_input = Command(resume=result)
                                 _hitl_resuming = True
@@ -960,7 +1172,9 @@ def run_textual_interactive(
 
                             # HITL: check session auto-approve first
                             if self._hitl_auto_approve:
-                                from langgraph.types import Command  # type: ignore[import-untyped]
+                                from langgraph.types import (
+                                    Command,  # type: ignore[import-untyped]
+                                )
 
                                 _stream_input = Command(
                                     resume={
@@ -983,7 +1197,9 @@ def run_textual_interactive(
                                     action_reqs,
                                 )
                                 if decisions is not None:
-                                    from langgraph.types import Command  # type: ignore[import-untyped]
+                                    from langgraph.types import (
+                                        Command,  # type: ignore[import-untyped]
+                                    )
 
                                     _stream_input = Command(
                                         resume={"decisions": decisions}
@@ -1003,7 +1219,7 @@ def run_textual_interactive(
 
                             # Interactive TUI: mount approval widget
                             # Disable main prompt so it can't steal focus
-                            _prompt = self.query_one("#prompt", Input)
+                            _prompt = self.query_one("#prompt", ChatTextArea)
                             _prompt.disabled = True
                             from .widgets.approval_widget import ApprovalWidget
 
@@ -1016,7 +1232,9 @@ def run_textual_interactive(
                             if decided_event and decided_event.decisions is not None:
                                 if decided_event.auto_approve_session:
                                     self._hitl_auto_approve = True
-                                from langgraph.types import Command  # type: ignore[import-untyped]
+                                from langgraph.types import (
+                                    Command,  # type: ignore[import-untyped]
+                                )
 
                                 _stream_input = Command(
                                     resume={"decisions": decided_event.decisions}
@@ -1087,8 +1305,8 @@ def run_textual_interactive(
                     response = (state.response_text or "").strip()
 
                 except asyncio.CancelledError:
-                    # Ctrl+C cancellation
-                    pass
+                    # Ctrl+C cancellation — re-raise so _run_turn can handle it
+                    raise
                 except Exception as exc:
                     error_msg = str(exc)
                     if (
@@ -1177,16 +1395,25 @@ def run_textual_interactive(
             self._render_status()
             cancelled = False
 
+            # Resolve @file mentions — inject file contents before sending to agent.
+            # Use self._workspace_dir (current session) not the startup-captured
+            # workspace_dir closure, which becomes stale after /new or /resume.
+            _, message_to_send, file_warnings = await asyncio.to_thread(
+                resolve_file_mentions, user_text, self._workspace_dir
+            )
+
             try:
-                await self._stream_with_widgets(user_text)
+                await self._stream_with_widgets(
+                    message_to_send, file_warnings=file_warnings
+                )
             except asyncio.CancelledError:
                 cancelled = True
-                self._append_system("Interrupted.", style="yellow")
+                self._append_system("\nInterrupted by user", style="dim italic #ffe082")
             finally:
                 self._busy = False
                 self._run_task = None
                 self._render_status()
-                self.query_one("#prompt", Input).focus()
+                self.query_one("#prompt", ChatTextArea).focus()
 
             # Process next queued message (FIFO) — skip if interrupted
             if not cancelled and self._queued_messages:
@@ -1206,7 +1433,7 @@ def run_textual_interactive(
             self._busy = True
             self._render_status()
 
-            prompt_widget = self.query_one("#prompt", Input)
+            prompt_widget = self.query_one("#prompt", ChatTextArea)
             prompt_widget.disabled = True
 
             # Mount user message first, then "Received" label
@@ -1284,6 +1511,36 @@ def run_textual_interactive(
                 """
                 return _ch_mod.channel_ask_user_prompt(ask_user_data, msg)
 
+            from ..commands.channel_ui import ChannelCommandUI
+
+            # Handle slash commands from channel
+            if msg.content.strip().startswith("/"):
+                ctx = CommandContext(
+                    agent=self._agent,
+                    thread_id=self._conversation_tid,
+                    ui=ChannelCommandUI(
+                        msg,
+                        append_system_callback=self._append_system,
+                        start_new_session_callback=self.start_new_session,
+                        handle_session_resume_callback=self.handle_session_resume,
+                    ),
+                    workspace_dir=self._workspace_dir,
+                    checkpointer=self._checkpointer,
+                )
+                if await cmd_manager.execute(msg.content, ctx):
+                    self._append_system(
+                        f"[{msg.channel_type}: Executed command from {msg.sender}]",
+                        style="dim",
+                    )
+                    _set_channel_response(
+                        msg.msg_id, f"Command executed: {msg.content}"
+                    )
+                    self._busy = False
+                    self._render_status()
+                    prompt_widget.disabled = False
+                    prompt_widget.focus()
+                    return
+
             response = ""
             try:
                 response = await self._stream_with_widgets(
@@ -1320,10 +1577,15 @@ def run_textual_interactive(
 
         # ── Input handling ─────────────────────────────────────
 
-        async def on_input_submitted(self, event: Input.Submitted) -> None:
+        async def on_chat_text_area_submitted(
+            self, event: ChatTextArea.Submitted
+        ) -> None:
             text = event.value.strip()
-            prompt = self.query_one("#prompt", Input)
+            prompt = self.query_one("#prompt", ChatTextArea)
             prompt.value = ""
+            self._quit_pending = False
+            self._history_index = -1
+            self._history_saved_input = ""
 
             if not text:
                 return
@@ -1339,20 +1601,33 @@ def run_textual_interactive(
                 # Launch as independent task to free the message pump.
                 # Commands like /resume mount interactive widgets that need
                 # the pump to process key events and message bubbling.
-                asyncio.ensure_future(self._handle_command(text))
+                _task = asyncio.create_task(self._handle_command(text))
+                self._background_tasks.add(_task)
+                _task.add_done_callback(self._background_tasks.discard)
                 return
 
             self._history_suggester.append_entry(text)
             self._run_task = asyncio.ensure_future(self._run_turn(text))
 
-        def on_input_changed(self, event: Input.Changed) -> None:
-            text = event.value
+        def on_text_area_changed(self, event: ChatTextArea.Changed) -> None:
+            text = event.text_area.text
             comp_widget = self.query_one("#completions", Static)
+
+            # @file mention completion
+            if "@" in text:
+                candidates = complete_file_mention(text, workspace_dir)
+                if candidates:
+                    self._comp_items = candidates
+                    self._comp_index = -1
+                    self._render_completions()
+                    comp_widget.display = True
+                    return
+
             if text.startswith("/"):
                 prefix = text.lower()
                 matches = [
                     (cmd, desc)
-                    for cmd, desc in _TUI_SLASH_COMMANDS
+                    for cmd, desc in cmd_manager.list_commands()
                     if cmd.startswith(prefix)
                 ]
                 if len(matches) == 1 and matches[0][0] == prefix:
@@ -1398,10 +1673,12 @@ def run_textual_interactive(
                     # Force-resolve the future
                     self._ask_user_future.set_result({"type": "cancelled"})
                 return
-            # Delegate to ApprovalWidget or ThreadPickerWidget if focused
+            # Delegate to ApprovalWidget, ThreadPickerWidget, or SkillBrowserWidget if focused
             focused = self.focused
             if focused is not None:
                 from .widgets.approval_widget import ApprovalWidget
+                from .widgets.mcp_browser import MCPBrowserWidget
+                from .widgets.skill_browser import SkillBrowserWidget
                 from .widgets.thread_selector import ThreadPickerWidget
 
                 if isinstance(focused, ApprovalWidget):
@@ -1410,17 +1687,32 @@ def run_textual_interactive(
                 if isinstance(focused, ThreadPickerWidget):
                     focused.action_cancel()
                     return
+                if isinstance(focused, SkillBrowserWidget):
+                    focused.action_cancel()
+                    return
+                if isinstance(focused, MCPBrowserWidget):
+                    focused.action_cancel()
+                    return
             if self._queued_messages:
                 self._queued_messages.pop()
                 self._render_queue_indicator()
 
         def action_edit_queued(self) -> None:
             """Pop the last queued message back into input for editing."""
-            # Skip if an ApprovalWidget, AskUserWidget, or ThreadPickerWidget has focus
+            # Handle completion list selection (up key)
+            comp_widget = self.query_one("#completions", Static)
+            if comp_widget.display and self._comp_items:
+                self._comp_index = (self._comp_index - 1) % len(self._comp_items)
+                self._render_completions()
+                return
+
+            # Skip if an ApprovalWidget, AskUserWidget, ThreadPickerWidget, or SkillBrowserWidget has focus
             focused = self.focused
             if focused is not None:
                 from .widgets.approval_widget import ApprovalWidget
                 from .widgets.ask_user_widget import AskUserWidget
+                from .widgets.mcp_browser import MCPBrowserWidget
+                from .widgets.skill_browser import SkillBrowserWidget
                 from .widgets.thread_selector import ThreadPickerWidget
 
                 if isinstance(focused, ApprovalWidget):
@@ -1430,22 +1722,50 @@ def run_textual_interactive(
                     focused.action_move_up()
                     return
                 if isinstance(focused, ThreadPickerWidget):
+                    focused.action_move_up()
+                    return
+                if isinstance(focused, SkillBrowserWidget):
+                    focused.action_move_up()
+                    return
+                if isinstance(focused, MCPBrowserWidget):
                     focused.action_move_up()
                     return
             if self._queued_messages:
                 last = self._queued_messages.pop()
-                prompt = self.query_one("#prompt", Input)
+                prompt = self.query_one("#prompt", ChatTextArea)
                 prompt.value = last
-                prompt.cursor_position = len(prompt.value)
                 prompt.focus()
                 self._render_queue_indicator()
+                return
+
+            # History browsing (up key)
+            entries = self._history_suggester._entries
+            if not entries:
+                return
+            prompt = self.query_one("#prompt", ChatTextArea)
+            if self._history_index == -1:
+                # Save current input before entering history
+                self._history_saved_input = prompt.value
+            if self._history_index + 1 < len(entries):
+                self._history_index += 1
+                prompt.value = entries[self._history_index]
+                prompt.focus()
 
         def action_down_delegate(self) -> None:
-            """Delegate down key to focused ApprovalWidget, AskUserWidget, or ThreadPickerWidget."""
+            """Delegate down key to focused interactive widget."""
+            # Handle completion list selection (down key)
+            comp_widget = self.query_one("#completions", Static)
+            if comp_widget.display and self._comp_items:
+                self._comp_index = (self._comp_index + 1) % len(self._comp_items)
+                self._render_completions()
+                return
+
             focused = self.focused
             if focused is not None:
                 from .widgets.approval_widget import ApprovalWidget
                 from .widgets.ask_user_widget import AskUserWidget
+                from .widgets.mcp_browser import MCPBrowserWidget
+                from .widgets.skill_browser import SkillBrowserWidget
                 from .widgets.thread_selector import ThreadPickerWidget
 
                 if isinstance(focused, ApprovalWidget):
@@ -1457,33 +1777,100 @@ def run_textual_interactive(
                 if isinstance(focused, ThreadPickerWidget):
                     focused.action_move_down()
                     return
+                if isinstance(focused, SkillBrowserWidget):
+                    focused.action_move_down()
+                    return
+                if isinstance(focused, MCPBrowserWidget):
+                    focused.action_move_down()
+                    return
 
-        def on_key(self, event: Any) -> None:
-            comp_widget = self.query_one("#completions", Static)
-            if not (comp_widget.display and self._comp_items):
+            # History browsing (down key)
+            if self._history_index >= 0:
+                prompt = self.query_one("#prompt", ChatTextArea)
+                self._history_index -= 1
+                if self._history_index == -1:
+                    # Back to saved input
+                    prompt.value = self._history_saved_input
+                else:
+                    prompt.value = self._history_suggester._entries[self._history_index]
+                prompt.focus()
+
+        def action_paste_clipboard(self) -> None:
+            """Paste text from system clipboard into the input field."""
+            text = get_clipboard_text()
+            if not text:
+                self.notify(
+                    "Clipboard is empty or unavailable",
+                    severity="warning",
+                    timeout=2,
+                )
                 return
 
-            if event.key in ("tab", "down"):
-                event.prevent_default()
-                event.stop()
-                self._comp_index = (self._comp_index + 1) % len(self._comp_items)
-                self._apply_selected_completion()
-            elif event.key == "up":
-                event.prevent_default()
-                event.stop()
-                self._comp_index = (self._comp_index - 1) % len(self._comp_items)
-                self._apply_selected_completion()
-            elif event.key == "enter" and self._comp_index >= 0:
-                event.prevent_default()
-                event.stop()
-                self._hide_completions()
+            prompt = self.query_one("#prompt", ChatTextArea)
+            prompt.insert(text)
+            prompt.focus()
+
+        def action_tab_complete(self) -> None:
+            """Handle TAB: cycle completions when visible, otherwise no-op.
+
+            Registered as a priority binding so it intercepts before Textual's
+            default focus-next behaviour, which would steal focus from the input
+            and lose the cursor.
+            """
+            comp_widget = self.query_one("#completions", Static)
+            if not (comp_widget.display and self._comp_items):
+                # No completions active — keep focus on the prompt.
+                self.query_one("#prompt", ChatTextArea).focus()
+                return
+            self._comp_index = (self._comp_index + 1) % len(self._comp_items)
+            self._apply_selected_completion()
+
+        def _handle_completion_enter(self) -> bool:
+            """Called by ChatTextArea before submitting on Enter.
+
+            If a completion is active and an item is selected, apply it
+            and suppress the submit.  If the list is visible but nothing
+            is selected (index == -1), select the first item instead of
+            submitting the raw prefix.
+
+            Returns:
+                True to suppress submit, False to allow it.
+            """
+            comp_widget = self.query_one("#completions", Static)
+            if not (comp_widget.display and self._comp_items):
+                return False
+
+            # If no item highlighted yet, select the first one
+            if self._comp_index < 0:
+                self._comp_index = 0
+
+            self._apply_selected_completion()
+            self._hide_completions()
+            return True
 
         def _apply_selected_completion(self) -> None:
-            selected_cmd = self._comp_items[self._comp_index][0]
-            prompt = self.query_one("#prompt", Input)
-            prompt.value = selected_cmd + " "
-            prompt.cursor_position = len(prompt.value)
-            self._render_completions()
+            """Apply the currently selected completion to the input field.
+
+            For ``@file`` completions the last ``@token`` is replaced in-place;
+            for slash-command completions the entire input is replaced.
+            """
+            if self._comp_index < 0 or self._comp_index >= len(self._comp_items):
+                return
+            selected = self._comp_items[self._comp_index][0]
+            prompt = self.query_one("#prompt", ChatTextArea)
+
+            if selected.startswith("@"):
+                import re as _re
+
+                current = prompt.value
+                m = _re.search(r"@[^\s]*$", current)
+                if m:
+                    new_val = current[: m.start()] + selected + " "
+                else:
+                    new_val = current + selected + " "
+                prompt.value = new_val
+            else:
+                prompt.value = selected + " "
 
         def _hide_completions(self) -> None:
             self._comp_items = []
@@ -1496,11 +1883,11 @@ def run_textual_interactive(
             for i, (cmd, desc) in enumerate(self._comp_items):
                 if i == self._comp_index:
                     comp_text.append("\u25b8 ", style="bold")
-                    comp_text.append(f"{cmd:<22}", style="bold")
+                    comp_text.append(f"{cmd:<30}", style="bold")
                     comp_text.append(desc, style="bold")
                 else:
                     comp_text.append("  ", style="#888888")
-                    comp_text.append(f"{cmd:<22}", style="#888888")
+                    comp_text.append(f"{cmd:<30}", style="#888888")
                     comp_text.append(desc, style="#888888")
                 if i < len(self._comp_items) - 1:
                     comp_text.append("\n")
@@ -1509,731 +1896,121 @@ def run_textual_interactive(
         # ── Slash commands ─────────────────────────────────────
 
         async def _handle_command(self, command: str) -> None:
-            cmd, _, arg = command.strip().partition(" ")
-            cmd = cmd.lower()
-            arg = arg.strip()
+            # Echo the command so the user sees what they ran
+            self._append_system(command.strip(), style="cyan")
 
-            if cmd in ("/exit", "/quit", "/q"):
-                self.action_request_quit()
-                return
+            ctx = CommandContext(
+                agent=self._agent,
+                thread_id=self._conversation_tid,
+                ui=self,
+                workspace_dir=self._workspace_dir,
+                checkpointer=self._checkpointer,
+            )
 
-            if cmd == "/help":
-                help_text = Text("Available commands:\n", style="bold")
-                for hcmd, hdesc in _TUI_SLASH_COMMANDS:
-                    help_text.append(f"  {hcmd:<22}", style="cyan")
-                    help_text.append(f"{hdesc}\n", style="dim")
-                self._mount_renderable(help_text)
-                return
-
-            if cmd == "/current":
-                from .. import paths
-
-                self._append_system(f"Thread: {self._conversation_tid}", style="dim")
-                if self._workspace_dir:
-                    self._append_system(
-                        f"Workspace: {_shorten_path(self._workspace_dir)}",
-                        style="dim",
-                    )
-                memory_path = _shorten_path(str(paths.MEMORY_DIR))
-                if memory_path:
-                    self._append_system(f"Memory dir: {memory_path}", style="dim")
-                self._append_system("UI: tui", style="dim")
-                return
-
-            if cmd == "/new":
-                # Clear all widgets except #welcome
-                container = self.query_one("#chat", VerticalScroll)
-                welcome = self.query_one("#welcome", Static)
-                for child in list(container.children):
-                    if child is not welcome:
-                        await child.remove()
-
-                if not workspace_fixed:
-                    self._workspace_dir = create_session_workspace(run_name)
-                self._conversation_tid = generate_thread_id()
-                self._agent = load_agent(
-                    workspace_dir=self._workspace_dir,
-                    checkpointer=self._checkpointer,
-                )
-                if _channels_is_running():
-                    _ch_mod._cli_agent = self._agent
-                    _ch_mod._cli_thread_id = self._conversation_tid
-                self._render_welcome()
-                self._render_status()
-                self._append_system(
-                    f"New session: {self._conversation_tid}", style="green"
-                )
-                return
-
-            if cmd == "/clear":
-                container = self.query_one("#chat", VerticalScroll)
-                welcome = self.query_one("#welcome", Static)
-                for child in list(container.children):
-                    if child is not welcome:
-                        await child.remove()
-                return
-
-            if cmd == "/threads":
-                await self._cmd_threads()
-                return
-
-            if cmd == "/resume":
-                await self._cmd_resume(arg)
-                return
-
-            if cmd == "/delete":
-                await self._cmd_delete(arg)
-                return
-
-            if cmd == "/skills":
-                self._cmd_skills()
-                return
-
-            if cmd == "/install-skill":
-                self._cmd_install_skill(arg)
-                return
-
-            if cmd == "/uninstall-skill":
-                self._cmd_uninstall_skill(arg)
-                return
-
-            if cmd == "/mcp":
-                self._cmd_mcp(arg)
-                return
-
-            if cmd == "/channel":
-                self._cmd_channel(arg)
-                return
-
-            if cmd == "/compact":
-                from .commands import compact_conversation, render_compact_result
-
-                self._append_system("Compacting conversation...")
-                result = await compact_conversation(
-                    agent=self._agent,
-                    thread_id=self._conversation_tid,
-                )
-                self._mount_renderable(render_compact_result(result))
+            if await cmd_manager.execute(command, ctx):
                 return
 
             self._append_system(f"Unknown command: {command}", style="yellow")
 
-        async def _resolve_thread_id(self, prefix: str) -> str | None:
-            if await thread_exists(prefix):
-                return prefix
-
-            similar = await find_similar_threads(prefix)
-            if len(similar) == 1:
-                return similar[0]
-
-            if len(similar) > 1:
-                self._append_system(
-                    f"Ambiguous thread ID '{prefix}'. Use a longer prefix.",
-                    style="yellow",
-                )
-                for thread in similar:
-                    self._append_system(f"  - {thread}", style="dim")
-                return None
-
-            self._append_system(f"Thread '{prefix}' not found.", style="red")
-            return None
-
-        async def _cmd_threads(self) -> None:
-            threads = await list_threads(
-                limit=0,
-                include_message_count=True,
-                include_preview=True,
-            )
-            if not threads:
-                self._append_system("No saved sessions.", style="yellow")
-                return
-
-            table = Table(title="Sessions", show_header=True, header_style="bold cyan")
-            table.add_column("ID", style="bold")
-            table.add_column("Preview", style="dim", max_width=50, no_wrap=True)
-            table.add_column("Messages", justify="right")
-            table.add_column("Model", style="dim")
-            table.add_column("Last Used", style="dim")
-            for thread in threads:
-                thread_id_value = thread["thread_id"]
-                marker = " *" if thread_id_value == self._conversation_tid else ""
-                table.add_row(
-                    f"{thread_id_value}{marker}",
-                    thread.get("preview", "") or "",
-                    str(thread.get("message_count", 0)),
-                    thread.get("model", "") or "",
-                    _format_relative_time(thread.get("updated_at")),
-                )
-            self._mount_renderable(table)
-
         async def _render_history(self, thread_id_value: str) -> None:
-            """Render conversation history from a saved thread."""
+            """Render conversation history from a saved thread.
+
+            Restores human messages and AI responses (with Markdown and
+            thinking panels). Tool calls and other intermediate steps are
+            skipped — they are difficult to faithfully reproduce from
+            checkpoint data.
+            """
             messages = await get_thread_messages(thread_id_value)
             if not messages:
                 return
 
+            HISTORY_WINDOW = 50
             container = self.query_one("#chat", VerticalScroll)
-            await container.mount(
-                SystemMessage("── Conversation history ──", msg_style="dim")
-            )
-            for message in messages:
+
+            # Only human and ai messages; skip tool/system/other
+            display = [
+                m for m in messages if getattr(m, "type", None) in ("human", "ai")
+            ]
+
+            if len(display) > HISTORY_WINDOW:
+                skipped = len(display) - HISTORY_WINDOW
+                display = display[-HISTORY_WINDOW:]
+                await container.mount(
+                    SystemMessage(
+                        f"── ... {skipped} earlier messages ──", msg_style="dim"
+                    )
+                )
+            else:
+                await container.mount(
+                    SystemMessage("── Conversation history ──", msg_style="dim")
+                )
+
+            for message in display:
                 msg_type = getattr(message, "type", None)
                 content = getattr(message, "content", "") or ""
-                if isinstance(content, list):
-                    parts = [
-                        block.get("text", "")
-                        for block in content
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    ]
-                    content = " ".join(parts) if parts else ""
-                content = content.strip()
-                if len(content) > 220:
-                    content = content[:220] + "..."
 
                 if msg_type == "human":
-                    await container.mount(UserMessage(content))
-                elif msg_type == "ai":
-                    tool_calls = getattr(message, "tool_calls", None) or []
+                    if isinstance(content, list):
+                        parts = [
+                            block.get("text", "")
+                            for block in content
+                            if isinstance(block, dict) and block.get("type") == "text"
+                        ]
+                        content = " ".join(parts) if parts else ""
+                    content = content.strip()
                     if content:
-                        await container.mount(Static(Text(content, style="dim")))
-                    if tool_calls:
-                        names = [tc.get("name", "?") for tc in tool_calls]
-                        await container.mount(
-                            Static(
-                                Text(f"  \u25b6 {', '.join(names)}", style="dim italic")
-                            )
-                        )
+                        await container.mount(UserMessage(content))
+
+                elif msg_type == "ai":
+                    # Extract thinking and text blocks from content list
+                    thinking_text = ""
+                    text_content = ""
+                    if isinstance(content, list):
+                        for block in content:
+                            if not isinstance(block, dict):
+                                continue
+                            if block.get("type") == "thinking":
+                                thinking_text += block.get("thinking", "")
+                            elif block.get("type") == "text":
+                                text_content += block.get("text", "")
+                    else:
+                        text_content = content or ""
+                    text_content = text_content.strip()
+
+                    # Render thinking as collapsed panel (click to expand)
+                    if thinking_text.strip() and show_thinking:
+                        w = ThinkingWidget(show_thinking=True)
+                        await container.mount(w)
+                        w.append_text(thinking_text)
+                        w.finalize()
+
+                    # Render AI response with full Markdown
+                    if text_content:
+                        await container.mount(AssistantMessage(text_content))
+
             await container.mount(
                 SystemMessage("── End of history ──", msg_style="dim")
             )
             container.scroll_end(animate=False)
 
-        async def _cmd_resume(self, arg: str) -> None:
-            if not arg:
-                # Show inline thread picker
-                threads = await list_threads(
-                    limit=0,
-                    include_message_count=True,
-                    include_preview=True,
-                )
-                if not threads:
-                    self._append_system("No sessions to resume.", style="yellow")
-                    return
-
-                from .widgets.thread_selector import ThreadPickerWidget
-
-                container = self.query_one("#chat", VerticalScroll)
-                picker = ThreadPickerWidget(
-                    threads,
-                    current_thread=self._conversation_tid,
-                    title=">>> Select session to resume <<<",
-                )
-                await container.mount(picker)
-                container.scroll_end(animate=False)
-                picker.focus()
-
-                selected = await self._wait_for_thread_pick(picker)
-                if selected is None:
-                    return
-                arg = selected
-
-            resolved = await self._resolve_thread_id(arg)
-            if not resolved:
-                return
-
-            metadata = await get_thread_metadata(resolved)
-            restored_workspace = (metadata or {}).get("workspace_dir", "")
-            if restored_workspace:
-                self._workspace_dir = restored_workspace
-
-            self._conversation_tid = resolved
-            self._agent = load_agent(
-                workspace_dir=self._workspace_dir,
-                checkpointer=self._checkpointer,
-            )
-            if _channels_is_running():
-                _ch_mod._cli_agent = self._agent
-                _ch_mod._cli_thread_id = self._conversation_tid
-            self._render_welcome()
-            self._render_status()
-            self._append_system(f"Resumed session: {resolved}", style="green")
-            await self._render_history(resolved)
-
-        async def _cmd_delete(self, arg: str) -> None:
-            if not arg:
-                # Show inline thread picker for deletion
-                threads = await list_threads(
-                    limit=0,
-                    include_message_count=True,
-                    include_preview=True,
-                )
-                if not threads:
-                    self._append_system("No sessions to delete.", style="yellow")
-                    return
-
-                from .widgets.thread_selector import ThreadPickerWidget
-
-                container = self.query_one("#chat", VerticalScroll)
-                picker = ThreadPickerWidget(
-                    threads,
-                    current_thread=self._conversation_tid,
-                    title=">>> Select session to delete <<<",
-                )
-                await container.mount(picker)
-                container.scroll_end(animate=False)
-                picker.focus()
-
-                selected = await self._wait_for_thread_pick(picker)
-                if selected is None:
-                    return
-                arg = selected
-
-            resolved = await self._resolve_thread_id(arg)
-            if not resolved:
-                return
-
-            if resolved == self._conversation_tid:
-                self._append_system(
-                    "Cannot delete the current session.",
-                    style="yellow",
-                )
-                return
-
-            deleted = await delete_thread(resolved)
-            if deleted:
-                self._append_system(f"Deleted session {resolved}.", style="green")
-            else:
-                self._append_system(f"Session {resolved} not found.", style="red")
-
-        def _cmd_skills(self) -> None:
-            from ..tools.skills_manager import list_skills
-            from ..paths import USER_SKILLS_DIR
-
-            skills = list_skills(include_system=True)
-            if not skills:
-                self._append_system("No skills available.", style="dim")
-                self._append_system(
-                    "Install with: /install-skill <path-or-url>", style="dim"
-                )
-                self._append_system(
-                    f"Skills directory: {_shorten_path(str(USER_SKILLS_DIR))}",
-                    style="dim",
-                )
-                return
-
-            user_skills = [s for s in skills if s.source == "user"]
-            system_skills = [s for s in skills if s.source == "system"]
-
-            if user_skills:
-                table = Table(
-                    title=f"User Skills ({len(user_skills)})", show_header=True
-                )
-                table.add_column("Name", style="green")
-                table.add_column("Description", style="dim")
-                for s in user_skills:
-                    table.add_row(s.name, s.description)
-                self._mount_renderable(table)
-
-            if system_skills:
-                table = Table(
-                    title=f"Built-in Skills ({len(system_skills)})", show_header=True
-                )
-                table.add_column("Name", style="cyan")
-                table.add_column("Description", style="dim")
-                for s in system_skills:
-                    table.add_row(s.name, s.description)
-                self._mount_renderable(table)
-
-            self._append_system(
-                f"User skills folder: {_shorten_path(str(USER_SKILLS_DIR))}",
-                style="dim",
-            )
-
-        def _cmd_install_skill(self, source: str) -> None:
-            from ..tools.skills_manager import install_skill
-
-            if not source:
-                self._append_system(
-                    "Usage: /install-skill <path-or-url>", style="yellow"
-                )
-                self._append_system("Examples:", style="dim")
-                self._append_system("  /install-skill ./my-skill", style="dim")
-                self._append_system(
-                    "  /install-skill https://github.com/user/repo/tree/main/skill-name",
-                    style="dim",
-                )
-                self._append_system(
-                    "  /install-skill user/repo@skill-name", style="dim"
-                )
-                return
-
-            self._append_system(f"Installing skill from: {source}", style="dim")
-            result = install_skill(source)
-            if result["success"]:
-                self._append_system(f"Installed: {result['name']}", style="green")
-                self._append_system(
-                    f"Description: {result.get('description', '(none)')}",
-                    style="dim",
-                )
-                self._append_system(
-                    f"Path: {_shorten_path(result['path'])}", style="dim"
-                )
-                self._append_system("Reload with /new to apply.", style="dim")
-            else:
-                self._append_system(f"Failed: {result['error']}", style="red")
-
-        def _cmd_uninstall_skill(self, name: str) -> None:
-            from ..tools.skills_manager import uninstall_skill
-
-            if not name:
-                self._append_system(
-                    "Usage: /uninstall-skill <skill-name>", style="yellow"
-                )
-                self._append_system("Use /skills to see installed skills.", style="dim")
-                return
-
-            result = uninstall_skill(name)
-            if result["success"]:
-                self._append_system(f"Uninstalled: {name}", style="green")
-                self._append_system("Reload with /new to apply.", style="dim")
-            else:
-                self._append_system(f"Failed: {result['error']}", style="red")
-
-        def _cmd_mcp(self, args: str) -> None:
-            args = args.strip()
-            if not args or args == "list":
-                self._mcp_list()
-                return
-
-            parts = args.split(maxsplit=1)
-            subcmd = parts[0].lower()
-            subargs = parts[1] if len(parts) > 1 else ""
-
-            if subcmd == "config":
-                self._mcp_config(subargs.strip())
-            elif subcmd == "add":
-                self._mcp_add(subargs)
-            elif subcmd == "edit":
-                self._mcp_edit(subargs)
-            elif subcmd == "remove":
-                self._mcp_remove(subargs.strip())
-            else:
-                self._append_system("MCP commands:", style="bold")
-                self._append_system(
-                    "  /mcp              List configured servers", style="dim"
-                )
-                self._append_system(
-                    "  /mcp list         List configured servers", style="dim"
-                )
-                self._append_system(
-                    "  /mcp config       Show detailed server config", style="dim"
-                )
-                self._append_system("  /mcp add ...      Add a server", style="dim")
-                self._append_system(
-                    "  /mcp edit ...     Edit an existing server", style="dim"
-                )
-                self._append_system("  /mcp remove ...   Remove a server", style="dim")
-
-        def _mcp_list(self) -> None:
-            from ..mcp import load_mcp_config
-            from ..mcp.client import USER_MCP_CONFIG
-
-            config = load_mcp_config()
-            if not config:
-                self._append_system("No MCP servers configured.", style="dim")
-                self._append_system(
-                    "Add one with: /mcp add <name> <command-or-url> [args...]",
-                    style="dim",
-                )
-                return
-
-            table = Table(title="MCP Servers", show_header=True)
-            table.add_column("Server", style="cyan")
-            table.add_column("Transport", style="green")
-            table.add_column("Tools", style="yellow")
-            table.add_column("Expose To", style="magenta")
-
-            for name, server in config.items():
-                transport = server.get("transport", "?")
-                tools = server.get("tools")
-                tools_str = ", ".join(tools) if tools else "(all)"
-                expose_to = server.get("expose_to", ["main"])
-                if isinstance(expose_to, str):
-                    expose_to = [expose_to]
-                expose_str = ", ".join(expose_to)
-                table.add_row(name, transport, tools_str, expose_str)
-
-            self._mount_renderable(table)
-            self._append_system(f"Config file: {USER_MCP_CONFIG}", style="dim")
-
-        def _mcp_config(self, name: str) -> None:
-            from ..mcp import load_mcp_config
-            from ..mcp.client import USER_MCP_CONFIG
-
-            config = load_mcp_config()
-            if not config:
-                self._append_system("No MCP servers configured.", style="dim")
-                return
-
-            if name and name not in config:
-                self._append_system(f"Server not found: {name}", style="red")
-                return
-
-            servers = {name: config[name]} if name else config
-            for srv_name, srv in servers.items():
-                table = Table(
-                    title=f"MCP Server: {srv_name}",
-                    show_header=True,
-                    title_style="bold cyan",
-                )
-                table.add_column("Setting", style="cyan")
-                table.add_column("Value")
-                table.add_row("transport", str(srv.get("transport", "(not set)")))
-                if srv.get("command"):
-                    table.add_row("command", str(srv["command"]))
-                if srv.get("args"):
-                    table.add_row("args", " ".join(str(a) for a in srv["args"]))
-                if srv.get("url"):
-                    table.add_row("url", str(srv["url"]))
-                if srv.get("headers"):
-                    for k, v in srv["headers"].items():
-                        table.add_row(f"header: {k}", str(v))
-                if srv.get("env"):
-                    for k, v in srv["env"].items():
-                        table.add_row(f"env: {k}", str(v))
-                tools = srv.get("tools")
-                table.add_row("tools", ", ".join(tools) if tools else "(all)")
-                expose_to = srv.get("expose_to", ["main"])
-                if isinstance(expose_to, str):
-                    expose_to = [expose_to]
-                table.add_row("expose_to", ", ".join(expose_to))
-                self._mount_renderable(table)
-
-            self._append_system(f"Config file: {USER_MCP_CONFIG}", style="dim")
-
-        def _mcp_add(self, args_str: str) -> None:
-            from ..mcp import parse_mcp_add_args, add_mcp_server
-
-            if not args_str.strip():
-                self._append_system(
-                    "Usage: /mcp add <name> <command-or-url> [args...]", style="yellow"
-                )
-                return
-
-            try:
-                tokens = shlex.split(args_str)
-                kwargs = parse_mcp_add_args(tokens)
-                entry = add_mcp_server(**kwargs)
-                self._append_system(
-                    f"Added MCP server: {kwargs['name']} ({entry['transport']})",
-                    style="green",
-                )
-                self._append_system("Reload with /new to apply.", style="dim")
-            except ValueError as exc:
-                self._append_system(f"{exc}", style="red")
-
-        def _mcp_edit(self, args_str: str) -> None:
-            from ..mcp import parse_mcp_edit_args, edit_mcp_server
-
-            if not args_str.strip():
-                self._append_system(
-                    "Usage: /mcp edit <name> --<field> <value> ...",
-                    style="yellow",
-                )
-                return
-
-            try:
-                tokens = shlex.split(args_str)
-                name, fields = parse_mcp_edit_args(tokens)
-                if not fields:
-                    self._append_system(
-                        "No fields to edit. Use --transport, --command, --url, --tools, --expose-to, etc.",
-                        style="red",
-                    )
-                    return
-                edit_mcp_server(name, **fields)
-                self._append_system(f"Updated MCP server: {name}", style="green")
-                for k, v in fields.items():
-                    self._append_system(f"  {k}: {v}", style="dim")
-                self._append_system("Reload with /new to apply.", style="dim")
-            except (KeyError, ValueError) as exc:
-                self._append_system(f"{exc}", style="red")
-
-        def _mcp_remove(self, name: str) -> None:
-            from ..mcp import remove_mcp_server
-
-            if not name:
-                self._append_system("Usage: /mcp remove <name>", style="yellow")
-                return
-
-            if remove_mcp_server(name):
-                self._append_system(f"Removed MCP server: {name}", style="green")
-                self._append_system("Reload with /new to apply.", style="dim")
-            else:
-                self._append_system(f"Server not found: {name}", style="red")
-
-        def _cmd_channel(self, args: str) -> None:
-            """Handle /channel command — start, stop, or show status."""
-            from ..config import load_config
-            from .channel import (
-                _add_channel_to_running_bus,
-                _start_channels_bus_mode,
-                _channels_running_list,
-            )
-
-            args = args.strip().lower() if args else ""
-
-            if args == "status" or (not args and _channels_is_running()):
-                running = _channels_running_list()
-                if running and _ch_mod._manager:
-                    detailed = _ch_mod._manager.get_detailed_status()
-                    table = Table(
-                        title="Channel Status",
-                        show_header=True,
-                        expand=False,
-                    )
-                    table.add_column("Channel", style="cyan")
-                    table.add_column("Status")
-                    table.add_column("Uptime", style="dim")
-                    table.add_column("Rx", justify="right")
-                    table.add_column("Tx", justify="right")
-                    for ch_name in running:
-                        info = detailed.get(ch_name, {})
-                        secs = info.get("uptime_seconds", 0)
-                        mins, s = divmod(int(secs), 60)
-                        hours, mins = divmod(mins, 60)
-                        uptime = f"{hours}h{mins:02d}m" if hours else f"{mins}m{s:02d}s"
-                        rx = str(info.get("received", 0))
-                        tx = str(info.get("sent", 0))
-                        table.add_row(
-                            ch_name,
-                            "[green]running[/green]",
-                            uptime,
-                            rx,
-                            tx,
-                        )
-                    self._mount_renderable(table)
-                else:
-                    self._append_system("No channel running", style="dim")
-                return
-
-            if args.startswith("stop"):
-                stop_type = args[len("stop") :].strip() or None
-                if not _channels_is_running():
-                    self._append_system("No channel running", style="dim")
-                    return
-                if stop_type:
-                    if not _channels_is_running(stop_type):
-                        self._append_system(
-                            f"{stop_type} is not running",
-                            style="dim",
-                        )
-                        return
-                    _channels_stop(stop_type)
-                    if stop_type in self._started_channel_types:
-                        self._started_channel_types.remove(stop_type)
-                    self._append_system(f"{stop_type} stopped", style="dim")
-                else:
-                    running = _channels_running_list()
-                    _channels_stop()
-                    self._started_channel_types.clear()
-                    self._append_system(
-                        f"{', '.join(running)} stopped",
-                        style="dim",
-                    )
-                self._render_welcome()
-                return
-
-            # Start channel(s)
-            app_config = load_config()
-            channel_type = (
-                args if args else (app_config.channel_enabled if app_config else "")
-            )
-            if not channel_type:
-                self._append_system("No channel configured.", style="yellow")
-                self._append_system(
-                    "Run EvoSci onboard or specify: /channel telegram",
-                    style="dim",
-                )
-                return
-
-            requested = [t.strip() for t in channel_type.split(",") if t.strip()]
-
-            if _channels_is_running():
-                running = _channels_running_list()
-                results: list[tuple[str, bool, str]] = []
-                for ct in requested:
-                    if ct in running:
-                        results.append((ct, True, "already running"))
-                    else:
-                        try:
-                            _add_channel_to_running_bus(
-                                ct,
-                                app_config,
-                                send_thinking=self._channel_send_thinking,
-                            )
-                            results.append((ct, True, "connected (bus)"))
-                        except Exception as e:
-                            results.append((ct, False, str(e)))
-            else:
-                _ch_mod._cli_agent = self._agent
-                _ch_mod._cli_thread_id = self._conversation_tid
-                original = app_config.channel_enabled
-                app_config.channel_enabled = channel_type
-                try:
-                    _start_channels_bus_mode(
-                        app_config,
-                        self._agent,
-                        self._conversation_tid,
-                        send_thinking=self._channel_send_thinking,
-                    )
-                    results = [(ct, True, "connected (bus)") for ct in requested]
-                except Exception as e:
-                    results = [(ct, False, str(e)) for ct in requested]
-                finally:
-                    app_config.channel_enabled = original
-
-            for ct, ok, _ in results:
-                if ok and ct not in self._started_channel_types:
-                    self._started_channel_types.append(ct)
-
-            self._render_channel_results(results)
-            self._render_welcome()
-
-        def _render_channel_results(
-            self,
-            results: list[tuple[str, bool, str]],
-        ) -> None:
-            for name, ok, detail in results:
-                if ok:
-                    self._append_system(
-                        f"\u25cf {name}  {detail}",
-                        style="green",
-                    )
-                else:
-                    self._append_system(
-                        f"\u2717 {name}  {detail}",
-                        style="yellow",
-                    )
-
         # ── Quit handling ──────────────────────────────────────
 
-        def action_request_quit(self) -> None:
-            if self._busy:
-                # Clear all queued messages on interrupt
-                if self._queued_messages:
-                    self._queued_messages.clear()
-                    self._render_queue_indicator()
-                if self._run_task is not None and not self._run_task.done():
-                    self._run_task.cancel()
-                else:
-                    # Edge case: busy but no task — force reset
-                    self._busy = False
-                    self.query_one("#prompt", Input).focus()
-                    self._render_status()
-                    self._append_system("Interrupted.", style="yellow")
-                return
-            # Clean up channels
+        def _arm_quit_pending(self, shortcut: str) -> None:
+            """Set the pending-quit flag and show a matching hint."""
+            self._quit_pending = True
+            quit_timeout = 3  # seconds
+            self.notify(f"Press {shortcut} again to quit", timeout=quit_timeout)
+            self.set_timer(
+                quit_timeout,
+                lambda: setattr(self, "_quit_pending", False),
+            )
+
+        def force_quit(self) -> None:
+            """Exit immediately without double-press confirmation (used by /exit command)."""
+            self._do_exit()
+
+        def _do_exit(self) -> None:
+            """Clean up channels and exit."""
             if self._channel_timer is not None:
                 self._channel_timer.stop()
                 self._channel_timer = None
@@ -2244,6 +2021,30 @@ def run_textual_interactive(
                 except Exception:
                     pass
             self.exit()
+
+        def action_request_quit(self) -> None:
+            if self._busy:
+                self._quit_pending = False
+                # Clear all queued messages on interrupt
+                if self._queued_messages:
+                    self._queued_messages.clear()
+                    self._render_queue_indicator()
+                if self._run_task is not None and not self._run_task.done():
+                    self._run_task.cancel()
+                else:
+                    # Edge case: busy but no task — force reset
+                    self._busy = False
+                    self.query_one("#prompt", ChatTextArea).focus()
+                    self._render_status()
+                    self._append_system(
+                        "\nInterrupted by user", style="dim italic #ffe082"
+                    )
+                return
+            # Double Ctrl+C to quit
+            if self._quit_pending:
+                self._do_exit()
+            else:
+                self._arm_quit_pending("Ctrl+C")
 
         # ── Banner & status ────────────────────────────────────
 
@@ -2324,6 +2125,7 @@ def run_textual_interactive(
     ) -> None:
         """Check tool calls for media files and forward to channel."""
         import os
+
         from ..paths import resolve_virtual_path
 
         arg_key = "path" if tool_name == "write_file" else "file_path"

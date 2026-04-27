@@ -1,8 +1,9 @@
 """LLM model configuration based on LangChain init_chat_model.
 
 This module provides a unified interface for creating chat model instances
-with support for multiple providers (Anthropic, OpenAI, Google GenAI, NVIDIA,
-SiliconFlow, OpenRouter, ZhipuAI, Ollama, and custom OpenAI-compatible endpoints) and
+with support for multiple providers (Anthropic, OpenAI, Google GenAI, MiniMax
+(Anthropic-compatible), NVIDIA, SiliconFlow, OpenRouter, ZhipuAI, Volcengine,
+DashScope, DeepSeek, Ollama, and custom OpenAI/Anthropic-compatible endpoints) and
 convenient short names for common models.
 """
 
@@ -24,6 +25,7 @@ from langchain.chat_models import init_chat_model
 def _patch_anthropic_proxy_compat() -> None:
     try:
         import types as _types
+
         from langchain_anthropic.chat_models import ChatAnthropic as _CA
 
         _orig = _CA._make_message_chunk_from_anthropic_event
@@ -40,7 +42,9 @@ def _patch_anthropic_proxy_compat() -> None:
                     if isinstance(val, dict):
                         d = val.copy()
                         setattr(
-                            obj, attr, _types.SimpleNamespace(model_dump=lambda **kw: d)
+                            obj,
+                            attr,
+                            _types.SimpleNamespace(model_dump=lambda d=d, **kw: d),
                         )
             return _orig(self, event, *args, **kwargs)
 
@@ -63,23 +67,124 @@ def strip_thinking_tags(content: str) -> str:
     return _THINKING_TAG_RE.sub("", content)
 
 
+_SKIP_CONTENT_TYPES = frozenset({"thinking", "reasoning", "reasoning_content"})
+
+
+def _flatten_message_content(content: Any) -> str | Any:
+    """Convert list-of-blocks content to a plain string.
+
+    OpenAI-compatible APIs (DeepSeek, SiliconFlow, etc.) reject assistant
+    messages whose ``content`` is a list rather than a string.
+
+    Args:
+        content: Message content — either a string, a list of content blocks
+            (dicts with ``type`` and ``text`` keys), or another type.
+
+    Returns:
+        A plain string with text blocks joined by double newlines.
+        Thinking/reasoning blocks are skipped.  Non-list input is
+        returned unchanged.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return content
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, dict):
+            if block.get("type") in _SKIP_CONTENT_TYPES:
+                continue
+            text = block.get("text")
+            if text:
+                parts.append(text)
+        elif isinstance(block, str):
+            parts.append(block)
+    return "\n\n".join(parts) if parts else ""
+
+
+def _patch_openai_compat_content(model: Any) -> None:
+    """Flatten list content to strings before OpenAI-compatible API calls.
+
+    Wraps ``_generate`` / ``_agenerate`` to prevent "invalid type: sequence,
+    expected a string" errors from strict APIs like DeepSeek.  Follows the
+    same monkey-patching pattern as ``_patch_anthropic_proxy_compat``.
+
+    Args:
+        model: A LangChain chat model instance to patch in-place.
+    """
+    import copy
+    import functools
+
+    from langchain_core.messages import BaseMessage
+
+    def _sanitize_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
+        out: list[BaseMessage] = []
+        for msg in messages:
+            if isinstance(msg.content, list):
+                msg = copy.copy(msg)
+                msg.content = _flatten_message_content(msg.content)
+            out.append(msg)
+        return out
+
+    orig_generate = getattr(model, "_generate", None)
+    if orig_generate is None:
+        return
+
+    @functools.wraps(orig_generate)
+    def _patched_generate(
+        messages: list[BaseMessage], *args: Any, **kwargs: Any
+    ) -> Any:
+        return orig_generate(_sanitize_messages(messages), *args, **kwargs)
+
+    model._generate = _patched_generate
+
+    orig_agenerate = getattr(model, "_agenerate", None)
+    if orig_agenerate is not None:
+
+        @functools.wraps(orig_agenerate)
+        async def _patched_agenerate(
+            messages: list[BaseMessage], *args: Any, **kwargs: Any
+        ) -> Any:
+            return await orig_agenerate(_sanitize_messages(messages), *args, **kwargs)
+
+        model._agenerate = _patched_agenerate
+
+
+_MINIMAX_ANTHROPIC_BASE_URL = "https://api.minimaxi.com/anthropic"
 _SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _ZHIPU_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 _ZHIPU_CODE_BASE_URL = "https://open.bigmodel.cn/api/coding/paas/v4"
+_VOLCENGINE_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
-# Third-party providers routed through the OpenAI provider with a custom base_url.
+_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
+# Providers routed through the OpenAI provider with a custom base_url.
 # Maps provider name → (base_url or None, env var for API key).
-_THIRD_PARTY_PROVIDERS: dict[str, tuple[str | None, str]] = {
+_OPENAI_ROUTED_PROVIDERS: dict[str, tuple[str | None, str]] = {
+    "deepseek": (_DEEPSEEK_BASE_URL, "DEEPSEEK_API_KEY"),
     "siliconflow": (_SILICONFLOW_BASE_URL, "SILICONFLOW_API_KEY"),
     "openrouter": (_OPENROUTER_BASE_URL, "OPENROUTER_API_KEY"),
     "zhipu": (_ZHIPU_BASE_URL, "ZHIPU_API_KEY"),
     "zhipu-code": (_ZHIPU_CODE_BASE_URL, "ZHIPU_API_KEY"),
+    "volcengine": (_VOLCENGINE_BASE_URL, "VOLCENGINE_API_KEY"),
+    "dashscope": (_DASHSCOPE_BASE_URL, "DASHSCOPE_API_KEY"),
     "custom-openai": (
         None,
         "CUSTOM_OPENAI_API_KEY",
     ),  # base_url from CUSTOM_OPENAI_BASE_URL env
 }
+
+# Providers routed through the Anthropic provider with a custom base_url.
+# Maps provider name → (base_url or None, env var for API key).
+_ANTHROPIC_ROUTED_PROVIDERS: dict[str, tuple[str | None, str]] = {
+    "minimax": (_MINIMAX_ANTHROPIC_BASE_URL, "MINIMAX_API_KEY"),
+    "custom-anthropic": (None, "CUSTOM_ANTHROPIC_API_KEY"),
+}
+
+# Anthropic-routed providers that support extended thinking.
+_THINKING_CAPABLE_PROVIDERS: set[str] = {"minimax"}
 
 # Model registry: list of (short_name, model_id, provider)
 # Allows same short_name across different providers.
@@ -102,6 +207,8 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("claude-haiku-4-5", "claude-haiku-4-5", "anthropic"),
     # OpenAI
     ("gpt-5.4", "gpt-5.4-2026-03-05", "openai"),
+    ("gpt-5.4-mini", "gpt-5.4-mini", "openai"),
+    ("gpt-5.4-nano", "gpt-5.4-nano", "openai"),
     ("gpt-5.3-codex", "gpt-5.3-codex", "openai"),
     ("gpt-5.2-codex", "gpt-5.2-codex", "openai"),
     ("gpt-5.2", "gpt-5.2-2025-12-11", "openai"),
@@ -121,6 +228,11 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("gemini-2.5-flash", "gemini-2.5-flash", "google-genai"),
     ("gemini-2.5-flash-lite", "gemini-2.5-flash-lite", "google-genai"),
     ("gemini-2.5-pro", "gemini-2.5-pro", "google-genai"),
+    # MiniMax (direct API — Anthropic-compatible at api.minimaxi.com)
+    ("minimax-m2.7", "MiniMax-M2.7", "minimax"),
+    ("minimax-m2.7-highspeed", "MiniMax-M2.7-highspeed", "minimax"),
+    ("minimax-m2.5", "MiniMax-M2.5", "minimax"),
+    ("minimax-m2.5-highspeed", "MiniMax-M2.5-highspeed", "minimax"),
     # NVIDIA
     ("nemotron-super", "nvidia/nemotron-3-super-120b-a12b", "nvidia"),
     ("nemotron-nano", "nvidia/nemotron-3-nano-30b-a3b", "nvidia"),
@@ -145,12 +257,31 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("qwen3.5-122b", "qwen/qwen3.5-122b-a10b", "openrouter"),
     ("gemini-3-flash", "google/gemini-3-flash-preview", "openrouter"),
     ("claude-sonnet-4.6", "anthropic/claude-sonnet-4.6", "openrouter"),
+    ("glm-5-turbo", "z-ai/glm-5-turbo", "openrouter"),
     # Zhipu CodePlan (智谱代码计划 — coding-only endpoint)
     ("glm-5", "glm-5", "zhipu-code"),
+    ("glm-5-turbo", "glm-5-turbo", "zhipu-code"),
     ("glm-4.7", "glm-4.7", "zhipu-code"),
     # Zhipu (智谱 — general endpoint, default for simple lookups)
     ("glm-5", "glm-5", "zhipu"),
+    ("glm-5-turbo", "glm-5-turbo", "zhipu"),
     ("glm-4.7", "glm-4.7", "zhipu"),
+    # Volcengine (火山引擎 — Doubao models)
+    ("doubao-seed-2.0-pro", "doubao-seed-2-0-pro-260215", "volcengine"),
+    ("doubao-seed-2.0-lite", "doubao-seed-2-0-lite-260215", "volcengine"),
+    ("doubao-seed-2.0-mini", "doubao-seed-2-0-mini-260215", "volcengine"),
+    ("doubao-seed-2.0-code", "doubao-seed-2-0-code-preview-260215", "volcengine"),
+    ("doubao-seed-1.6", "doubao-seed-1.6", "volcengine"),
+    ("doubao-1.5-pro", "doubao-1.5-pro-256k", "volcengine"),
+    ("doubao-1.5-thinking-pro", "doubao-1.5-thinking-pro", "volcengine"),
+    # DashScope (阿里云 — Qwen models)
+    ("qwen3-coder", "qwen3-coder-plus", "dashscope"),
+    ("qwen3-235b", "qwen3-235b-a22b", "dashscope"),
+    ("qwen-max", "qwen-max", "dashscope"),
+    ("qwq-plus", "qwq-plus", "dashscope"),
+    # DeepSeek
+    ("deepseek-r1", "deepseek-reasoner", "deepseek"),
+    ("deepseek-v3", "deepseek-chat", "deepseek"),
 ]
 
 # Public dict for simple lookups (last entry wins for duplicate names).
@@ -179,6 +310,7 @@ def _apply_auto_config(
     model_id: str,
     is_third_party: bool,
     kwargs: dict[str, Any],
+    original_provider: str | None = None,
 ) -> None:
     """Auto-enable provider-specific features (thinking, reasoning, etc.).
 
@@ -187,11 +319,17 @@ def _apply_auto_config(
     """
     # Anthropic: extended thinking
     if provider == "anthropic" and "thinking" not in kwargs:
-        base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
-        _is_proxy = "127.0.0.1" in base_url or "localhost" in base_url
-        if is_third_party or _is_proxy:
-            # ccproxy manages thinking internally; don't set it here
-            # to avoid 422 errors with thinking content blocks in history
+        _supports_thinking = original_provider in _THINKING_CAPABLE_PROVIDERS
+        # Only check ANTHROPIC_BASE_URL for proxy detection on native Anthropic
+        # (routed providers have their own base_url set in kwargs already).
+        if not is_third_party:
+            base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
+            _is_proxy = "127.0.0.1" in base_url or "localhost" in base_url
+        else:
+            _is_proxy = False
+        if _is_proxy or (is_third_party and not _supports_thinking):
+            # ccproxy / generic third-party: skip thinking to avoid
+            # 422 errors with thinking content blocks in history
             pass
         elif model_id.endswith("4-6"):
             kwargs["thinking"] = {"type": "adaptive"}
@@ -204,9 +342,7 @@ def _apply_auto_config(
         base_url = os.environ.get("OPENAI_BASE_URL", "")
         _is_openai_proxy = "127.0.0.1" in base_url or "localhost" in base_url
         if _is_openai_proxy:
-            # ccproxy forces store=False. Setting `reasoning` triggers
-            # langchain-openai's Responses API path, which produces
-            # rs_ summary items that 404 on multi-turn. Skip entirely.
+            # Skip reasoning kwarg for ccproxy — not needed and may cause issues.
             pass
         else:
             kwargs["reasoning"] = {"effort": "high", "summary": "auto"}
@@ -275,8 +411,11 @@ def get_chat_model(
                 provider = "anthropic"  # Default fallback
 
     # Anthropic base_url override (e.g. ccproxy at localhost:8000/api/v1)
-    _is_third_party = provider in _THIRD_PARTY_PROVIDERS
+    _is_third_party = (
+        provider in _OPENAI_ROUTED_PROVIDERS or provider in _ANTHROPIC_ROUTED_PROVIDERS
+    )
     _is_openai_proxy = False
+    _original_provider: str | None = None
     if provider == "anthropic":
         base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
         if base_url:
@@ -292,15 +431,19 @@ def get_chat_model(
             kwargs["base_url"] = base_url
             _is_openai_proxy = "127.0.0.1" in base_url or "localhost" in base_url
             if _is_openai_proxy:
-                kwargs.setdefault("streaming", False)  # ccproxy streaming incompatible
-                kwargs.setdefault("use_responses_api", False)  # force Chat Completions
+                kwargs.setdefault(
+                    "streaming", False
+                )  # ccproxy streaming format incompatible with langchain-openai
+                kwargs.setdefault(
+                    "use_responses_api", True
+                )  # ccproxy Chat Completions does not support tool calling; Responses API does
         api_key = os.environ.get("OPENAI_API_KEY", "")
         if api_key:
             kwargs["api_key"] = api_key
 
-    # Third-party providers → route through OpenAI provider with base_url
-    elif provider in _THIRD_PARTY_PROVIDERS:
-        base_url_default, api_key_env = _THIRD_PARTY_PROVIDERS[provider]
+    # OpenAI-routed providers → route through OpenAI provider with base_url
+    elif provider in _OPENAI_ROUTED_PROVIDERS:
+        base_url_default, api_key_env = _OPENAI_ROUTED_PROVIDERS[provider]
         if provider == "custom-openai":
             base_url = os.environ.get("CUSTOM_OPENAI_BASE_URL", "")
             if not base_url:
@@ -322,28 +465,55 @@ def get_chat_model(
         if provider == "siliconflow":
             kwargs.setdefault("extra_body", {})["enable_thinking"] = False
         provider = "openai"
-    elif provider == "custom-anthropic":
-        base_url = os.environ.get("CUSTOM_ANTHROPIC_BASE_URL", "")
-        if not base_url:
-            raise ValueError(
-                "CUSTOM_ANTHROPIC_BASE_URL environment variable is required when using "
-                "the 'custom-anthropic' provider. Please set it to your "
-                "Anthropic-compatible API endpoint URL (e.g. https://api.anthropic.com)."
-            )
-        kwargs["base_url"] = base_url.rstrip("/")
-        api_key = os.environ.get("CUSTOM_ANTHROPIC_API_KEY", "")
+
+    # Anthropic-routed providers → route through Anthropic provider with base_url
+    elif provider in _ANTHROPIC_ROUTED_PROVIDERS:
+        base_url_default, api_key_env = _ANTHROPIC_ROUTED_PROVIDERS[provider]
+        if provider == "custom-anthropic":
+            base_url = os.environ.get("CUSTOM_ANTHROPIC_BASE_URL", "")
+            if not base_url:
+                raise ValueError(
+                    "CUSTOM_ANTHROPIC_BASE_URL environment variable is required when using "
+                    "the 'custom-anthropic' provider. Please set it to your "
+                    "Anthropic-compatible API endpoint URL (e.g. https://api.anthropic.com)."
+                )
+            base_url = base_url.rstrip("/")
+        else:
+            base_url = base_url_default
+        if base_url:
+            kwargs["base_url"] = base_url
+        api_key = os.environ.get(api_key_env, "")
         if api_key:
             kwargs["api_key"] = api_key
-        _is_third_party = True  # skip thinking in _apply_auto_config
+        _original_provider = provider
         provider = "anthropic"
+
     elif provider == "ollama":
         base_url = os.environ.get("OLLAMA_BASE_URL", "")
         if base_url:
             kwargs["base_url"] = base_url
 
-    _apply_auto_config(provider, model_id, _is_third_party, kwargs)
+    _apply_auto_config(provider, model_id, _is_third_party, kwargs, _original_provider)
+
+    # User-level override for the OpenAI Responses API vs Chat Completions.
+    # When "false", force Chat Completions and drop reasoning (which triggers
+    # the Responses API path in langchain-openai).
+    _responses_api_setting = (
+        os.environ.get("EVOSCIENTIST_USE_RESPONSES_API", "").strip().lower()
+    )
+    if _responses_api_setting == "false":
+        kwargs["use_responses_api"] = False
+        kwargs.pop("reasoning", None)
+    elif _responses_api_setting == "true":
+        kwargs["use_responses_api"] = True
 
     chat_model = init_chat_model(model=model_id, model_provider=provider, **kwargs)
+
+    # Flatten list content to strings for OpenAI-compatible providers
+    # (DeepSeek, SiliconFlow, OpenRouter, custom-openai, etc.) and
+    # native OpenAI through a proxy, to avoid "sequence expected string" errors.
+    if _is_third_party or _is_openai_proxy:
+        _patch_openai_compat_content(chat_model)
 
     return chat_model
 

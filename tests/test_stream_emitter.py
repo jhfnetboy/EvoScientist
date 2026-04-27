@@ -1,6 +1,6 @@
 """Tests for EvoScientist/stream/emitter.py."""
 
-from EvoScientist.stream.emitter import StreamEventEmitter, StreamEvent
+from EvoScientist.stream.emitter import StreamEvent, StreamEventEmitter
 
 
 class TestStreamEventEmitter:
@@ -99,6 +99,7 @@ class TestStreamEventEmitter:
             StreamEventEmitter.subagent_start("s", "d"),
             StreamEventEmitter.subagent_tool_call("s", "t", {}),
             StreamEventEmitter.subagent_tool_result("s", "t", "x"),
+            StreamEventEmitter.subagent_text("s", "c"),
             StreamEventEmitter.subagent_end("s"),
             StreamEventEmitter.interrupt("i", []),
             StreamEventEmitter.done(),

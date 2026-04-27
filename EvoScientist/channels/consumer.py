@@ -13,8 +13,9 @@ import asyncio
 import logging
 import uuid
 from collections import OrderedDict
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, TypeVar
+from typing import Any, TypeVar
 
 from .base import Channel
 from .bus import MessageBus
@@ -75,6 +76,36 @@ def _format_todo_list(todos: list[dict]) -> str:
         lines.append(f"{i}. {content}")
     lines.append(f"\n\U0001f680 {len(todos)} tasks")  # 🚀
     return "\n".join(lines)
+
+
+def _join_subagent_text(buffers: dict[str, tuple[str, list[str]]]) -> str:
+    """Join sub-agent text buffers into a single fallback string.
+
+    *buffers* maps ``instance_id`` → ``(display_name, chunks)``.
+
+    When only one instance produced text, return its content directly.
+    When multiple instances share the same display name, number them
+    (e.g. ``[research-agent #1]``, ``[research-agent #2]``).
+    """
+    if not buffers:
+        return ""
+    if len(buffers) == 1:
+        _display_name, chunks = next(iter(buffers.values()))
+        return "".join(chunks)
+
+    # Group by display_name to detect same-name instances
+    name_groups: dict[str, list[list[str]]] = {}
+    for _instance_id, (display_name, chunks) in buffers.items():
+        name_groups.setdefault(display_name, []).append(chunks)
+
+    sections: list[str] = []
+    for display_name, chunk_lists in name_groups.items():
+        if len(chunk_lists) == 1:
+            sections.append(f"[{display_name}]: {''.join(chunk_lists[0])}")
+        else:
+            for i, chs in enumerate(chunk_lists, 1):
+                sections.append(f"[{display_name} #{i}]: {''.join(chs)}")
+    return "\n\n".join(sections)
 
 
 def _should_auto_approve(action_requests: list[dict]) -> bool:
@@ -307,7 +338,7 @@ class InboundConsumer:
                         self.bus.consume_inbound(),
                         timeout=1.0,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
                 except asyncio.CancelledError:
                     break
@@ -429,6 +460,7 @@ class InboundConsumer:
                 final_content = ""
                 thinking_buffer: list[str] = []
                 todo_sent = False
+                subagent_text_buffers: dict[str, tuple[str, list[str]]] = {}
                 thinking_sent = False
                 interrupt_data: dict | None = None
 
@@ -480,6 +512,15 @@ class InboundConsumer:
                     elif event_type == "text":
                         final_content += event.get("content", "")
 
+                    elif event_type == "subagent_text":
+                        sa_name = event.get("subagent", "unknown")
+                        instance_id = event.get("instance_id") or sa_name
+                        if instance_id not in subagent_text_buffers:
+                            subagent_text_buffers[instance_id] = (sa_name, [])
+                        subagent_text_buffers[instance_id][1].append(
+                            event.get("content", "")
+                        )
+
                     elif event_type == "done":
                         final_content = event.get("content", "") or final_content
 
@@ -506,7 +547,9 @@ class InboundConsumer:
                     outbound = OutboundMessage(
                         channel=msg.channel,
                         chat_id=msg.chat_id,
-                        content=final_content or "No response",
+                        content=final_content
+                        or _join_subagent_text(subagent_text_buffers)
+                        or "No response",
                         reply_to=msg.message_id or None,
                         metadata=msg.metadata,
                     )
@@ -577,7 +620,7 @@ class InboundConsumer:
                         pending.event.wait(),
                         timeout=_HITL_APPROVAL_TIMEOUT,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Auto-approve on timeout
                     pending.decision = "approve"
                 finally:
@@ -606,7 +649,7 @@ class InboundConsumer:
                 )
                 # continue to next HITL round
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._metrics.total_timeouts += 1
             logger.error(
                 f"Inference timeout ({self._inference_timeout}s idle) "
@@ -678,7 +721,7 @@ class InboundConsumer:
         self._pending_ask_user_replies[session_key] = pending
         try:
             await asyncio.wait_for(pending.event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         finally:
             self._pending_ask_user_replies.pop(session_key, None)
