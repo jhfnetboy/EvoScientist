@@ -102,7 +102,9 @@ def _flatten_message_content(content: Any) -> str | Any:
     return "\n\n".join(parts) if parts else ""
 
 
-def _patch_openai_compat_content(model: Any) -> None:
+def _patch_openai_compat_content(
+    model: Any, *, system_role_override: str | None = None
+) -> None:
     """Flatten list content to strings before OpenAI-compatible API calls.
 
     Wraps ``_generate`` / ``_agenerate`` to prevent "invalid type: sequence,
@@ -111,18 +113,28 @@ def _patch_openai_compat_content(model: Any) -> None:
 
     Args:
         model: A LangChain chat model instance to patch in-place.
+        system_role_override: Optional OpenAI role to use for SystemMessage.
     """
     import copy
     import functools
 
-    from langchain_core.messages import BaseMessage
+    from langchain_core.messages import BaseMessage, SystemMessage
 
     def _sanitize_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
         out: list[BaseMessage] = []
         for msg in messages:
+            copied = False
             if isinstance(msg.content, list):
                 msg = copy.copy(msg)
+                copied = True
                 msg.content = _flatten_message_content(msg.content)
+            if system_role_override and isinstance(msg, SystemMessage):
+                if not copied:
+                    msg = copy.copy(msg)
+                msg.additional_kwargs = {
+                    **msg.additional_kwargs,
+                    "__openai_role__": system_role_override,
+                }
             out.append(msg)
         return out
 
@@ -513,7 +525,10 @@ def get_chat_model(
     # (DeepSeek, SiliconFlow, OpenRouter, custom-openai, etc.) and
     # native OpenAI through a proxy, to avoid "sequence expected string" errors.
     if _is_third_party or _is_openai_proxy:
-        _patch_openai_compat_content(chat_model)
+        _patch_openai_compat_content(
+            chat_model,
+            system_role_override="developer" if _is_openai_proxy else None,
+        )
 
     return chat_model
 

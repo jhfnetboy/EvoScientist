@@ -12,7 +12,7 @@ from EvoScientist.llm import (
     get_models_for_provider,
     list_models,
 )
-from EvoScientist.llm.models import _MODEL_ENTRIES
+from EvoScientist.llm.models import _MODEL_ENTRIES, _patch_openai_compat_content
 
 # =============================================================================
 # Test MODELS registry
@@ -258,6 +258,30 @@ class TestGetChatModel:
 
         call_kwargs = mock_init.call_args[1]
         assert call_kwargs["model_provider"] == "anthropic"
+
+
+# =============================================================================
+# Test OpenAI compatibility patch
+# =============================================================================
+
+
+class TestOpenAICompatPatch:
+    def test_system_role_override_uses_developer(self):
+        """OpenAI proxy mode should send SystemMessage as developer role."""
+        from langchain_core.messages import SystemMessage
+
+        class FakeModel:
+            def _generate(self, messages, *args, **kwargs):
+                return messages
+
+        model = FakeModel()
+        _patch_openai_compat_content(model, system_role_override="developer")
+
+        original = SystemMessage(content="instructions")
+        result = model._generate([original])
+
+        assert result[0].additional_kwargs["__openai_role__"] == "developer"
+        assert "__openai_role__" not in original.additional_kwargs
 
 
 # =============================================================================
