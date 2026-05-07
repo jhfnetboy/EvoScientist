@@ -10,11 +10,14 @@ ccproxy is invoked via subprocess (not Python imports) so the
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import time
+from pathlib import Path
 
 from EvoScientist.config import EvoScientistConfig
 
@@ -170,17 +173,80 @@ def is_ccproxy_running(port: int) -> bool:
     import httpx
 
     try:
-        resp = httpx.get(f"http://127.0.0.1:{port}/health/live", timeout=2.0)
+        # trust_env=False bypasses HTTP(S)_PROXY/ALL_PROXY env vars: a SOCKS
+        # all_proxy (e.g. Clash) would otherwise hijack the localhost probe.
+        with httpx.Client(trust_env=False, timeout=2.0) as client:
+            resp = client.get(f"http://127.0.0.1:{port}/health/live")
         return resp.status_code == 200
     except (httpx.ConnectError, httpx.TimeoutException, OSError):
         return False
 
 
-def start_ccproxy(port: int) -> subprocess.Popen:
+def _ccproxy_plugin_flags(
+    *, enable_anthropic: bool = True, enable_openai: bool = True
+) -> list[str]:
+    """Return ccproxy plugin flags for the providers needed by this session."""
+    flags: list[str] = []
+    if not enable_anthropic:
+        flags.extend(["--disable-plugin", "claude_api"])
+        flags.extend(["--disable-plugin", "oauth_claude"])
+    if not enable_openai:
+        flags.extend(["--disable-plugin", "codex"])
+        flags.extend(["--disable-plugin", "oauth_codex"])
+    return flags
+
+
+def _toml_string(value: str) -> str:
+    return json.dumps(value)
+
+
+def _write_codex_mapping_config(codex_model: str | None) -> Path | None:
+    if not codex_model:
+        return None
+    model = _toml_string(codex_model)
+    config_text = f"""[plugins.codex]
+model_mappings = [
+  {{ match = "gpt-", target = {model}, kind = "prefix" }},
+  {{ match = "o3-", target = {model}, kind = "prefix" }},
+  {{ match = "o1-", target = {model}, kind = "prefix" }},
+  {{ match = "claude-", target = {model}, kind = "prefix" }},
+]
+
+[[plugins.codex.models_endpoint]]
+id = {model}
+object = "model"
+owned_by = "openai"
+root = {model}
+permission = []
+"""
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        prefix="evosci-ccproxy-",
+        suffix=".toml",
+        delete=False,
+    )
+    with tmp:
+        tmp.write(config_text)
+    return Path(tmp.name)
+
+
+def start_ccproxy(
+    port: int,
+    *,
+    enable_anthropic: bool = True,
+    enable_openai: bool = True,
+    codex_model: str | None = None,
+    timeout_s: int = 120,
+) -> subprocess.Popen:
     """Start ccproxy serve as a background process.
 
     Args:
         port: Port number for the proxy server.
+        enable_anthropic: Keep Anthropic/Claude ccproxy plugins enabled.
+        enable_openai: Keep OpenAI/Codex ccproxy plugins enabled.
+        codex_model: Upstream Codex model for ccproxy model mapping.
+        timeout_s: Number of seconds to wait for ccproxy health.
 
     Returns:
         The Popen handle for the ccproxy process.
@@ -190,14 +256,36 @@ def start_ccproxy(port: int) -> subprocess.Popen:
         FileNotFoundError: If ccproxy binary is not found.
     """
     exe = _ccproxy_exe() or "ccproxy"
+    temp_config = _write_codex_mapping_config(codex_model if enable_openai else None)
+    cmd = [
+        exe,
+        "serve",
+        "--port",
+        str(port),
+        *_ccproxy_plugin_flags(
+            enable_anthropic=enable_anthropic,
+            enable_openai=enable_openai,
+        ),
+    ]
+    if temp_config:
+        cmd.extend(["--config", str(temp_config)])
+    # Capture ccproxy output to a log file for diagnostics.
+    # If ccproxy fails to start, this log is the only way to see why.
+    _log_path = Path(tempfile.gettempdir()) / "evosci-ccproxy.log"
+    _log_fp = open(_log_path, "w", encoding="utf-8")
     proc = subprocess.Popen(
-        [exe, "serve", "--port", str(port)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        cmd,
+        stdout=_log_fp,
+        stderr=subprocess.STDOUT,
     )
+    proc._evosci_ccproxy_log_fp = _log_fp  # keep open until proc exits
+    proc._evosci_ccproxy_log_path = _log_path
+    if temp_config:
+        proc._evosci_ccproxy_config_path = temp_config
 
-    # Wait for health (ccproxy can take up to ~11s on first start)
-    deadline = time.monotonic() + 30
+    # Wait for health. Recent ccproxy builds can spend close to a minute
+    # probing Codex/Claude CLI headers before the server starts listening.
+    deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise RuntimeError(
@@ -213,7 +301,12 @@ def start_ccproxy(port: int) -> subprocess.Popen:
         proc.wait(timeout=3)
     except subprocess.TimeoutExpired:
         proc.kill()
-    raise RuntimeError("ccproxy did not become healthy within 30 seconds")
+    if temp_config:
+        temp_config.unlink(missing_ok=True)
+    raise RuntimeError(
+        f"ccproxy did not become healthy within {timeout_s} seconds. "
+        f"Check log: {_log_path}"
+    )
 
 
 def stop_ccproxy(proc: subprocess.Popen | None) -> None:
@@ -231,9 +324,21 @@ def stop_ccproxy(proc: subprocess.Popen | None) -> None:
         proc.wait(timeout=2)
     except Exception:
         pass
+    config_path = getattr(proc, "_evosci_ccproxy_config_path", None)
+    if config_path:
+        try:
+            Path(config_path).unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
-def ensure_ccproxy(port: int) -> subprocess.Popen | None:
+def ensure_ccproxy(
+    port: int,
+    *,
+    enable_anthropic: bool = True,
+    enable_openai: bool = True,
+    codex_model: str | None = None,
+) -> subprocess.Popen | None:
     """Ensure ccproxy is running — reuse existing or start new.
 
     Returns:
@@ -242,7 +347,12 @@ def ensure_ccproxy(port: int) -> subprocess.Popen | None:
     if is_ccproxy_running(port):
         logger.debug("ccproxy already running on port %d", port)
         return None
-    return start_ccproxy(port)
+    return start_ccproxy(
+        port,
+        enable_anthropic=enable_anthropic,
+        enable_openai=enable_openai,
+        codex_model=codex_model,
+    )
 
 
 # =============================================================================
@@ -418,7 +528,12 @@ def maybe_start_ccproxy(config: EvoScientistConfig) -> subprocess.Popen | None:
     _patch_ccproxy_oauth_header()
 
     # Start ccproxy (single process serves both providers)
-    proc = ensure_ccproxy(port)
+    proc = ensure_ccproxy(
+        port,
+        enable_anthropic=anthropic_oauth,
+        enable_openai=openai_oauth,
+        codex_model=getattr(config, "model", "") or None,
+    )
 
     # Set environment for each OAuth provider
     if anthropic_oauth:

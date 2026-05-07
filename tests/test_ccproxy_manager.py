@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from EvoScientist.ccproxy_manager import (
+    _write_codex_mapping_config,
     check_ccproxy_auth,
     ensure_ccproxy,
     is_ccproxy_available,
@@ -143,7 +144,7 @@ class TestStartCcproxy:
         proc.poll.return_value = None
         mock_popen.return_value = proc
         # Simulate time passing beyond deadline
-        mock_time.monotonic.side_effect = [0, 0, 31]
+        mock_time.monotonic.side_effect = [0, 0, 121]
         mock_time.sleep = MagicMock()
 
         with pytest.raises(RuntimeError, match="did not become healthy"):
@@ -173,7 +174,20 @@ class TestEnsureCcproxy:
         mock_start.return_value = proc
         result = ensure_ccproxy(8000)
         assert result is proc
-        mock_start.assert_called_once_with(8000)
+        mock_start.assert_called_once_with(
+            8000, enable_anthropic=True, enable_openai=True, codex_model=None
+        )
+
+    def test_writes_codex_mapping_config(self):
+        path = _write_codex_mapping_config("gpt-5.5")
+        assert path is not None
+        try:
+            text = path.read_text()
+            assert 'target = "gpt-5.5"' in text
+            assert 'match = "gpt-"' in text
+            assert 'id = "gpt-5.5"' in text
+        finally:
+            path.unlink(missing_ok=True)
 
 
 # =============================================================================
@@ -270,6 +284,12 @@ class TestMaybeStartCcproxy:
 
         result = maybe_start_ccproxy(config)
         assert result is proc
+        mock_ensure.assert_called_once_with(
+            8000,
+            enable_anthropic=True,
+            enable_openai=False,
+            codex_model=config.model,
+        )
         mock_env.assert_called_once()
 
     @patch("EvoScientist.ccproxy_manager.is_ccproxy_available", return_value=False)
@@ -309,6 +329,12 @@ class TestMaybeStartCcproxy:
         result = maybe_start_ccproxy(config)
         assert result is proc
         mock_auth.assert_called_once_with("codex")
+        mock_ensure.assert_called_once_with(
+            8000,
+            enable_anthropic=False,
+            enable_openai=True,
+            codex_model=config.model,
+        )
         mock_env.assert_called_once()
 
     @patch("EvoScientist.ccproxy_manager.setup_codex_env")
@@ -330,6 +356,12 @@ class TestMaybeStartCcproxy:
         assert result is proc
         # Auth checked for both providers
         assert mock_auth.call_count == 2
+        mock_ensure.assert_called_once_with(
+            8000,
+            enable_anthropic=True,
+            enable_openai=True,
+            codex_model=config.model,
+        )
         mock_anthropic_env.assert_called_once()
         mock_codex_env.assert_called_once()
 
@@ -386,7 +418,12 @@ class TestMaybeStartCcproxy:
         config.ccproxy_port = 7777
 
         maybe_start_ccproxy(config)
-        mock_ensure.assert_called_once_with(7777)
+        mock_ensure.assert_called_once_with(
+            7777,
+            enable_anthropic=True,
+            enable_openai=False,
+            codex_model=config.model,
+        )
 
     @patch("EvoScientist.ccproxy_manager.check_ccproxy_auth", return_value=(True, "OK"))
     @patch("EvoScientist.ccproxy_manager.is_ccproxy_available", return_value=True)

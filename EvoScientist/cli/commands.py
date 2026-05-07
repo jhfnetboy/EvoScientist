@@ -946,6 +946,12 @@ def _main_callback(
     prompt: str | None = typer.Option(
         None, "-p", "--prompt", help="Query to execute (single-shot mode)"
     ),
+    provider: str | None = typer.Option(
+        None, "--provider", help="Override LLM provider for this session"
+    ),
+    model: str | None = typer.Option(
+        None, "--model", help="Override model for this session"
+    ),
     thread_id: str | None = typer.Option(
         None, "--thread-id", help="Thread ID for conversation persistence"
     ),
@@ -1001,6 +1007,10 @@ def _main_callback(
         cli_overrides["auto_approve"] = True
     if ask_user:
         cli_overrides["enable_ask_user"] = True
+    if provider:
+        cli_overrides["provider"] = provider
+    if model:
+        cli_overrides["model"] = model
     if auth_mode:
         if auth_mode not in ("api_key", "oauth"):
             raise typer.BadParameter("--auth-mode must be 'api_key' or 'oauth'")

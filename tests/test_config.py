@@ -35,6 +35,8 @@ def temp_config_dir(tmp_path, monkeypatch):
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "TAVILY_API_KEY",
+        "EVOSCIENTIST_PROVIDER",
+        "EVOSCIENTIST_MODEL",
         "EVOSCIENTIST_DEFAULT_MODE",
         "EVOSCIENTIST_WORKSPACE_DIR",
         "EVOSCIENTIST_UI_BACKEND",
@@ -50,6 +52,8 @@ def clean_env(monkeypatch):
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "TAVILY_API_KEY",
+        "EVOSCIENTIST_PROVIDER",
+        "EVOSCIENTIST_MODEL",
         "EVOSCIENTIST_DEFAULT_MODE",
         "EVOSCIENTIST_WORKSPACE_DIR",
         "EVOSCIENTIST_UI_BACKEND",
@@ -297,6 +301,8 @@ class TestPriorityChain:
             "ANTHROPIC_API_KEY",
             "OPENAI_API_KEY",
             "TAVILY_API_KEY",
+            "EVOSCIENTIST_PROVIDER",
+            "EVOSCIENTIST_MODEL",
             "EVOSCIENTIST_DEFAULT_MODE",
             "EVOSCIENTIST_WORKSPACE_DIR",
             "EVOSCIENTIST_UI_BACKEND",
@@ -341,6 +347,15 @@ class TestPriorityChain:
         monkeypatch.setenv("EVOSCIENTIST_UI_BACKEND", "tui")
         config = get_effective_config()
         assert config.ui_backend == "tui"
+
+    def test_env_provider_model_override(self, temp_config_dir, monkeypatch):
+        """Provider and model can be selected via environment variables."""
+        save_config(EvoScientistConfig(provider="anthropic", model="claude-sonnet-4-5"))
+        monkeypatch.setenv("EVOSCIENTIST_PROVIDER", "openai")
+        monkeypatch.setenv("EVOSCIENTIST_MODEL", "gpt-5.5")
+        config = get_effective_config()
+        assert config.provider == "openai"
+        assert config.model == "gpt-5.5"
 
     def test_env_api_key_override(self, temp_config_dir, monkeypatch):
         """Test API keys from env override file."""

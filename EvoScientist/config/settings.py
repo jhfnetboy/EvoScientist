@@ -376,6 +376,8 @@ _ENV_MAPPINGS = {
     "custom_anthropic_base_url": "CUSTOM_ANTHROPIC_BASE_URL",
     "ollama_base_url": "OLLAMA_BASE_URL",
     "tavily_api_key": "TAVILY_API_KEY",
+    "provider": "EVOSCIENTIST_PROVIDER",
+    "model": "EVOSCIENTIST_MODEL",
     "default_mode": "EVOSCIENTIST_DEFAULT_MODE",
     "default_workdir": "EVOSCIENTIST_WORKSPACE_DIR",
     "ui_backend": "EVOSCIENTIST_UI_BACKEND",
