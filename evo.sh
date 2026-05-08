@@ -19,6 +19,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# --- 确保 node / bun / codex 在 PATH ---
+# nvm 管理的 node 默认不在非交互 shell 的 PATH 里
+_NVM_NODE_DIR=""
+if [[ -d "$HOME/.nvm/versions/node" ]]; then
+  _NVM_NODE_DIR=$(ls -td "$HOME/.nvm/versions/node"/*/bin 2>/dev/null | head -1)
+fi
+[[ -n "$_NVM_NODE_DIR" ]] && export PATH="$_NVM_NODE_DIR:$PATH"
+[[ -d "$HOME/.bun/bin" ]] && export PATH="$HOME/.bun/bin:$PATH"
+
 # 默认工作目录（不带任何路径参数时使用）
 DEFAULT_WORKDIR="/Users/jason/Dev/jhfnetboy/DSR-Research-Flow"
 
