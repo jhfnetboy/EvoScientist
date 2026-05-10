@@ -87,49 +87,101 @@ if [[ -n "$PROVIDER" ]]; then
 fi
 EVO_ARGS+=("${PASSTHROUGH_ARGS[@]+"${PASSTHROUGH_ARGS[@]}"}")
 
-# --- Token pre-flight: 只在 anthropic 路径才检查 Claude ---
-# 思路:
-#   1) 查 token 过期时间
-#   2) 剩余 > 30min: 直接跑（最常见情况）
-#   3) 剩余 < 30min 或已过期: 调一次 ccproxy auth refresh
-#   4) refresh 失败（rate limit 或协议）: 提示 ccproxy auth login，但不阻塞
-#      （ccproxy 启动后自己也会再尝试一次）
-_check_claude_token() {
+# --- Pre-flight: 检查 ccproxy + token 状态，按需刷新 ---
+SETUP_REFRESH_SH="/Users/jason/Dev/PhD/ccproxy-api/setup-token-refresh.sh"
+CREDS="$HOME/.claude/.credentials.json"
+CCPROXY_PORT=18080
+
+# 从 .credentials.json 读取 token 剩余秒数；返回 -1 表示文件不存在/无法解析
+_token_remaining_seconds() {
+  [[ -f "$CREDS" ]] || { echo -1; return; }
+  python3 - <<'PYEOF' "$CREDS"
+import sys, json, time, pathlib
+try:
+    d = json.loads(pathlib.Path(sys.argv[1]).read_text())
+    exp_ms = d.get("claude_ai_oauth", {}).get("expiresAt", 0)
+    print(int(exp_ms / 1000 - time.time()) if exp_ms else -1)
+except Exception:
+    print(-1)
+PYEOF
+}
+
+# 检查 ccproxy 是否在跑
+_ccproxy_running() {
+  curl -s --max-time 1 "http://127.0.0.1:${CCPROXY_PORT}/health/live" > /dev/null 2>&1
+}
+
+_preflight() {
   local provider="${1:-}"
-  if [[ "$provider" != "anthropic" && -n "$provider" ]]; then
-    return 0  # 不是 Claude 路径，跳过
-  fi
-  local exp_line
-  exp_line=$(ccproxy auth status claude_api 2>/dev/null | grep "Token Expires" | head -1)
-  [[ -z "$exp_line" ]] && return 0  # status 失败就让 ccproxy 自己处理
 
-  # 解析 "Token Expires    2026-05-06 01:48:46.997000+00:00"
-  local exp_str
-  exp_str=$(echo "$exp_line" | awk '{print $3" "$4}' | sed 's/\.[0-9]*//;s/+00:00/+0000/')
-  local exp_epoch now_epoch remaining
-  exp_epoch=$(date -j -f "%Y-%m-%d %H:%M:%S%z" "$exp_str" +%s 2>/dev/null || echo 0)
-  now_epoch=$(date +%s)
-  remaining=$(( exp_epoch - now_epoch ))
-
-  if (( remaining > 1800 )); then
-    return 0  # 还剩 >30 分钟，跳过
+  # Codex 路径：只需确保 ccproxy 在跑，无需检查 Claude token
+  if [[ "$provider" == "openai" ]]; then
+    if ! _ccproxy_running; then
+      echo "[evo] ccproxy 未运行，启动中..."
+      nohup "$HOME/.local/bin/ccproxy" serve --port "$CCPROXY_PORT" \
+        >> /tmp/ccproxy-token-refresh.log 2>&1 &
+      local i=0
+      while (( i < 12 )); do
+        _ccproxy_running && { echo "[evo] ✓ ccproxy 已启动"; break; }
+        sleep 1; (( i++ ))
+      done
+      _ccproxy_running || echo "[evo] ⚠ ccproxy 启动超时，codex 可能失败"
+    fi
+    return 0
   fi
 
-  if (( remaining > 0 )); then
-    echo "[evo] Claude token 将在 $((remaining/60)) 分钟内过期，刷新中..."
-  else
-    echo "[evo] Claude token 已过期 $((-remaining/60)) 分钟，刷新中..."
+  # Claude 路径（anthropic 或未指定 provider）
+  local remaining
+  remaining=$(_token_remaining_seconds)
+
+  # 1) token 充足（>30 min）且 ccproxy 在跑 → 直接启动
+  if (( remaining > 1800 )) && _ccproxy_running; then
+    local h=$(( remaining / 3600 ))
+    local m=$(( (remaining % 3600) / 60 ))
+    echo "[evo] ✓ token 有效（剩余 ${h}h ${m}m），ccproxy 运行中"
+    return 0
   fi
 
-  if ccproxy auth refresh claude_api >/dev/null 2>&1; then
-    echo "[evo] ✓ token 已刷新"
-  else
-    echo "[evo] ⚠️  refresh 失败（多半是 Anthropic OAuth 限流）"
-    echo "[evo]    若 evo 启动后 401，请运行: ccproxy auth login claude_api"
+  # 2) token 即将过期或已过期 → 刷新
+  if (( remaining <= 1800 )); then
+    if (( remaining > 0 )); then
+      echo "[evo] ⚠ token 将在 $(( remaining / 60 )) 分钟内过期，刷新中..."
+    elif (( remaining == -1 )); then
+      echo "[evo] ⚠ 未找到 token 文件，尝试刷新..."
+    else
+      echo "[evo] ✗ token 已过期 $(( -remaining / 60 )) 分钟，刷新中..."
+    fi
+
+    if [[ -x "$SETUP_REFRESH_SH" ]]; then
+      if "$SETUP_REFRESH_SH" refresh 2>&1 | sed 's/^/[evo]   /'; then
+        echo "[evo] ✓ token 刷新并重启 ccproxy 完成"
+        return 0
+      else
+        echo "[evo] ✗ 自动刷新失败，需要重新登录："
+        echo "[evo]   请运行: ccproxy auth login claude_api"
+        echo "[evo]   然后重新执行 evo"
+        exit 1
+      fi
+    else
+      echo "[evo] ⚠ 未找到 $SETUP_REFRESH_SH，跳过刷新"
+    fi
+  fi
+
+  # 3) token 有效但 ccproxy 没跑 → 只需启动 ccproxy
+  if ! _ccproxy_running; then
+    echo "[evo] ccproxy 未运行，启动中..."
+    nohup "$HOME/.local/bin/ccproxy" serve --port "$CCPROXY_PORT" \
+      >> /tmp/ccproxy-token-refresh.log 2>&1 &
+    local i=0
+    while (( i < 12 )); do
+      _ccproxy_running && { echo "[evo] ✓ ccproxy 已启动"; return 0; }
+      sleep 1; (( i++ ))
+    done
+    echo "[evo] ⚠ ccproxy 启动超时"
   fi
 }
 
-_check_claude_token "$PROVIDER"
+_preflight "$PROVIDER"
 
 # --- 状态摘要 ---
 echo "[evo] workdir:  $WORKDIR"
