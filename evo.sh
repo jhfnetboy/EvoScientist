@@ -134,12 +134,42 @@ _preflight() {
   local remaining
   remaining=$(_token_remaining_seconds)
 
-  # 1) token 充足（>30 min）且 ccproxy 在跑 → 直接启动
+  # 检查 ccproxy 能否真正转发到 Anthropic（避免 ccproxy 在代理断线时启动后变僵尸）
+  _ccproxy_reachable() {
+    local code
+    code=$(curl -s --max-time 4 -o /dev/null -w "%{http_code}" \
+      -X POST "http://127.0.0.1:${CCPROXY_PORT}/claude/v1/messages" \
+      -H "Content-Type: application/json" \
+      -H "anthropic-version: 2023-06-01" \
+      -d '{"model":"claude-sonnet-4-6","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' \
+      2>/dev/null)
+    # 200/400/401/529 都表示 Anthropic 响应了；502/000 表示转发失败
+    [[ "$code" =~ ^(200|400|401|529)$ ]]
+  }
+
+  # 1) token 充足（>30 min）且 ccproxy 在跑且能转发 → 直接启动
   if (( remaining > 1800 )) && _ccproxy_running; then
     local h=$(( remaining / 3600 ))
     local m=$(( (remaining % 3600) / 60 ))
-    echo "[evo] ✓ token 有效（剩余 ${h}h ${m}m），ccproxy 运行中"
-    return 0
+    if _ccproxy_reachable; then
+      echo "[evo] ✓ token 有效（剩余 ${h}h ${m}m），ccproxy 运行中"
+      return 0
+    else
+      echo "[evo] ⚠ ccproxy 在跑但转发失败（502/代理断线），重启中..."
+      pkill -f "ccproxy serve" 2>/dev/null || true
+      sleep 1
+      nohup "$HOME/.local/bin/ccproxy" serve --port "$CCPROXY_PORT" \
+        >> /tmp/ccproxy-token-refresh.log 2>&1 &
+      local i=0
+      while (( i < 12 )); do
+        _ccproxy_running && _ccproxy_reachable && {
+          echo "[evo] ✓ ccproxy 已重启，转发正常"
+          return 0
+        }
+        sleep 1; (( i++ ))
+      done
+      echo "[evo] ⚠ ccproxy 重启后仍无法转发，请检查 Clash/代理是否开启"
+    fi
   fi
 
   # 2) token 即将过期或已过期 → 刷新
